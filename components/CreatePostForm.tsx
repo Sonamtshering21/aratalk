@@ -5,7 +5,7 @@ import { createPost, type FormState } from "@/app/actions";
 import { Honeypot } from "./Honeypot";
 
 const TITLE_MAX = 120;
-const BODY_MAX = 5000;
+const BODY_MAX = 2000;
 
 export function CreatePostForm() {
   const [state, formAction, pending] = useActionState<FormState, FormData>(createPost, {});

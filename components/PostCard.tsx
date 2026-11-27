@@ -1,10 +1,12 @@
 import Link from "next/link";
 import type { FeedPost } from "@/lib/feed-types";
 import { formatCount } from "@/lib/format";
+import { CardViewTracker } from "./CardViewTracker";
 import { timeAgo } from "@/lib/time";
 import { Avatar } from "./Avatar";
 import { LikeButton } from "./LikeButton";
-import { ChatIcon, EyeIcon } from "./icons";
+import { ViewCount } from "./ViewCount";
+import { ChatIcon } from "./icons";
 
 // Renders on the server (first page) and the client (infinite scroll pages).
 export function PostCard({ post, now }: { post: FeedPost; now: number }) {
@@ -12,6 +14,7 @@ export function PostCard({ post, now }: { post: FeedPost; now: number }) {
   const createdAt = new Date(post.createdAt);
   return (
     <article className="group relative min-w-0 rounded-card bg-card p-5 shadow-card transition hover:-translate-y-0.5 hover:shadow-card-hover">
+      <CardViewTracker postId={post.id} />
       <div className="mb-3 flex min-w-0 items-center gap-2.5 text-sm">
         <Avatar nickname={post.nickname} />
         <span className="min-w-0 truncate font-bold text-espresso">{post.nickname}</span>
@@ -41,13 +44,8 @@ export function PostCard({ post, now }: { post: FeedPost; now: number }) {
           <ChatIcon size={19} />
           <span className="tabular-nums">{formatCount(post.commentCount)}</span>
         </Link>
-        <span
-          className="ml-auto inline-flex min-h-11 items-center gap-1.5 px-1 text-sm font-semibold text-ink-soft/90"
-          title={`${post.viewCount.toLocaleString("en")} views`}
-        >
-          <EyeIcon size={18} />
-          <span className="tabular-nums">{formatCount(post.viewCount)}</span>
-          <span className="sr-only">views</span>
+        <span className="ml-auto">
+          <ViewCount postId={post.id} initial={post.viewCount} />
         </span>
       </div>
     </article>

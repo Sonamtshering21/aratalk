@@ -2,53 +2,78 @@ import { prisma } from "./prisma";
 
 // Fixed-window rate limiter stored in Postgres, so every server instance
 // (e.g. each Vercel function) shares the same counters.
+// Each write is checked per browser id AND per IP; posts also have a daily IP cap.
+
+type Rule = { max: number; windowMs: number };
+
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
 
 export const LIMITS = {
-  post: { max: 5, windowMs: 10 * 60_000 },
-  comment: { max: 20, windowMs: 10 * 60_000 },
-  like: { max: 60, windowMs: 60_000 },
-  report: { max: 20, windowMs: 10 * 60_000 },
-  view: { max: 120, windowMs: 10 * 60_000 },
-} as const;
+  post: { max: 1, windowMs: MINUTE },
+  comment: { max: 1, windowMs: 20_000 },
+  like: { max: 30, windowMs: MINUTE }, // post and comment likes share this
+  view: { max: 1, windowMs: 10_000 }, // one view batch
+  report: { max: 10, windowMs: HOUR },
+} satisfies Record<string, Rule>;
+
+/** Extra IP-only caps on top of LIMITS. */
+const IP_DAILY: Partial<Record<LimitName, Rule>> = {
+  post: { max: 20, windowMs: DAY },
+};
 
 export type LimitName = keyof typeof LIMITS;
 
-// A shared network (school, office, mobile carrier) can hold many people,
-// so the per-IP allowance is more generous than the per-identity one.
-const IP_MULTIPLIER = 4;
-
 const CLEANUP_CHANCE = 0.01;
-const KEEP_EXPIRED_MS = 60 * 60_000; // longest window is 10 min; keep an hour
 
-/** Returns true if the action is allowed for this identity and IP. */
+/** Returns true if the action is allowed for this browser id and IP. */
 export async function rateLimit(
   name: LimitName,
   identityHash: string,
   ipHash: string,
 ): Promise<boolean> {
-  const { max, windowMs } = LIMITS[name];
   const now = Date.now();
-  // Prisma stores UTC in `timestamp without time zone`; pass an ISO string and
-  // cast, so the DB session time zone can't shift it.
-  const windowStart = new Date(Math.floor(now / windowMs) * windowMs).toISOString();
-  const idKey = `${name}:id:${identityHash}`;
-  const ipKey = `${name}:ip:${ipHash}`;
+  const rule = LIMITS[name];
+  const checks: { key: string; rule: Rule }[] = [
+    { key: `${name}:id:${identityHash}`, rule },
+    { key: `${name}:ip:${ipHash}`, rule },
+  ];
+  const daily = IP_DAILY[name];
+  if (daily) checks.push({ key: `${name}:ipday:${ipHash}`, rule: daily });
 
-  // One statement: both counters are created or incremented atomically, so
+  // Prisma stores UTC in `timestamp without time zone`; pass ISO strings and
+  // cast, so the DB session time zone can't shift them.
+  const windowStart = (r: Rule) =>
+    new Date(Math.floor(now / r.windowMs) * r.windowMs).toISOString();
+  const [k1, k2, k3] = checks;
+
+  // One statement: every counter is created or incremented atomically, so
   // concurrent requests can't both read the same count.
-  const rows = await prisma.$queryRaw<{ key: string; count: number }[]>`
-    INSERT INTO "RateLimit" ("key", "windowStart", "count")
-    VALUES (${idKey}, ${windowStart}::timestamp, 1), (${ipKey}, ${windowStart}::timestamp, 1)
-    ON CONFLICT ("key", "windowStart")
-    DO UPDATE SET "count" = "RateLimit"."count" + 1
-    RETURNING "key", "count"`;
+  const rows = k3
+    ? await prisma.$queryRaw<{ key: string; count: number }[]>`
+        INSERT INTO "RateLimit" ("key", "windowStart", "count")
+        VALUES (${k1.key}, ${windowStart(k1.rule)}::timestamp, 1),
+               (${k2.key}, ${windowStart(k2.rule)}::timestamp, 1),
+               (${k3.key}, ${windowStart(k3.rule)}::timestamp, 1)
+        ON CONFLICT ("key", "windowStart")
+        DO UPDATE SET "count" = "RateLimit"."count" + 1
+        RETURNING "key", "count"`
+    : await prisma.$queryRaw<{ key: string; count: number }[]>`
+        INSERT INTO "RateLimit" ("key", "windowStart", "count")
+        VALUES (${k1.key}, ${windowStart(k1.rule)}::timestamp, 1),
+               (${k2.key}, ${windowStart(k2.rule)}::timestamp, 1)
+        ON CONFLICT ("key", "windowStart")
+        DO UPDATE SET "count" = "RateLimit"."count" + 1
+        RETURNING "key", "count"`;
 
   if (Math.random() < CLEANUP_CHANCE) {
-    await prisma.rateLimit.deleteMany({
-      where: { windowStart: { lt: new Date(now - KEEP_EXPIRED_MS) } },
-    });
+    // The longest window is a day; anything older than two days is dead.
+    await prisma.rateLimit.deleteMany({ where: { windowStart: { lt: new Date(now - 2 * DAY) } } });
   }
 
-  const count = (key: string) => rows.find((r) => r.key === key)?.count ?? Infinity;
-  return count(idKey) <= max && count(ipKey) <= max * IP_MULTIPLIER;
+  return checks.every(({ key, rule: r }) => {
+    const count = rows.find((row) => row.key === key)?.count ?? Infinity;
+    return count <= r.max;
+  });
 }

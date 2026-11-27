@@ -1,11 +1,7 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { cookies, headers } from "next/headers";
+import { IDENTITY_COOKIE, isValidIdentityValue } from "./identity-cookie";
 import { nicknameFromHash } from "./nickname";
-
-const COOKIE_NAME = "aratalk_id";
-const ONE_YEAR = 60 * 60 * 24 * 365;
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function secret(): string {
   const value = process.env.IDENTITY_SECRET;
@@ -26,33 +22,20 @@ export type Identity = { hash: string; nickname: string };
  * Safe to call from Server Components. Returns null for first-time visitors.
  */
 export async function readIdentityHash(): Promise<string | null> {
-  const value = (await cookies()).get(COOKIE_NAME)?.value;
-  if (!value || !UUID_RE.test(value)) return null;
+  const value = (await cookies()).get(IDENTITY_COOKIE)?.value;
+  if (!isValidIdentityValue(value)) return null;
   return sha256(value + secret());
 }
 
 /**
- * Get the viewer's identity, creating the cookie on first write.
- * Only call from Server Actions or Route Handlers (it may set a cookie).
+ * The viewer's identity for a write, or null when the request has no valid
+ * anonymous browser cookie. The cookie is issued when a page is loaded
+ * (proxy.ts); writes never create one, so cookie-less scripts are ignored.
  * The UUID and hash stay on the server; never return them to the client.
  */
-export async function getOrCreateIdentity(): Promise<Identity> {
-  const store = await cookies();
-  let value = store.get(COOKIE_NAME)?.value;
-
-  if (!value || !UUID_RE.test(value)) {
-    value = randomUUID();
-    store.set(COOKIE_NAME, value, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
-      path: "/",
-      maxAge: ONE_YEAR,
-    });
-  }
-
-  const hash = sha256(value + secret());
-  return { hash, nickname: nicknameFromHash(hash) };
+export async function requireIdentity(): Promise<Identity | null> {
+  const hash = await readIdentityHash();
+  return hash ? { hash, nickname: nicknameFromHash(hash) } : null;
 }
 
 /** Hashed client IP, used only as a rate-limit key. */

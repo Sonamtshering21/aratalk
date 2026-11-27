@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { CommentView, ThreadView } from "@/lib/queries";
+import type { CommentItem, RepliesPage, ThreadItem } from "@/lib/comment-types";
 import { timeAgo } from "@/lib/time";
 import { Avatar } from "./Avatar";
 import { CommentForm } from "./CommentForm";
@@ -9,9 +9,17 @@ import { LikeButton } from "./LikeButton";
 import { ReportButton } from "./ReportButton";
 import { ReplyIcon } from "./icons";
 
-const VISIBLE_REPLIES = 3;
-
 type ReplyTarget = { id: string; nickname: string };
+
+const byTime = (a: CommentItem, b: CommentItem) =>
+  a.createdAt === b.createdAt ? a.id.localeCompare(b.id) : a.createdAt.localeCompare(b.createdAt);
+
+/** Merge reply lists, newest data winning, oldest first. */
+function mergeReplies(...lists: CommentItem[][]): CommentItem[] {
+  const map = new Map<string, CommentItem>();
+  for (const list of lists) for (const r of list) map.set(r.id, r);
+  return [...map.values()].sort(byTime);
+}
 
 export function CommentThread({
   postId,
@@ -19,15 +27,38 @@ export function CommentThread({
   now,
 }: {
   postId: string;
-  thread: ThreadView;
+  thread: ThreadItem;
   now: number;
 }) {
   const [replyTo, setReplyTo] = useState<ReplyTarget | null>(null);
-  const [expanded, setExpanded] = useState(false);
+  // Replies loaded with "View more", and replies this browser just posted.
+  const [loaded, setLoaded] = useState<CommentItem[]>([]);
+  const [own, setOwn] = useState<CommentItem[]>([]);
+  const [cursor, setCursor] = useState<string | null | undefined>(undefined);
+  const [status, setStatus] = useState<"idle" | "loading" | "error">("idle");
 
-  const { comment, replies } = thread;
-  const hiddenCount = replies.length - VISIBLE_REPLIES;
-  const shown = expanded || hiddenCount <= 0 ? replies : replies.slice(0, VISIBLE_REPLIES);
+  const { comment } = thread;
+  const replies = mergeReplies(own, thread.replies, loaded);
+  const nextCursor = cursor === undefined ? thread.repliesCursor : cursor;
+  const remaining = Math.max(0, thread.replyCount - replies.length);
+
+  async function loadMore() {
+    if (!nextCursor || status === "loading") return;
+    setStatus("loading");
+    try {
+      const res = await fetch(
+        `/api/comments/${thread.id}/replies?cursor=${encodeURIComponent(nextCursor)}`,
+        { cache: "no-store" },
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const page = (await res.json()) as RepliesPage;
+      setLoaded((prev) => mergeReplies(prev, page.replies));
+      setCursor(page.nextCursor);
+      setStatus("idle");
+    } catch {
+      setStatus("error");
+    }
+  }
 
   const replyBox = (target: ReplyTarget) =>
     replyTo?.id === target.id && (
@@ -39,9 +70,9 @@ export function CommentThread({
           parentId={target.id}
           replyingTo={target.nickname}
           onCancel={() => setReplyTo(null)}
-          onDone={() => {
+          onDone={(reply) => {
             setReplyTo(null);
-            setExpanded(true);
+            if (reply) setOwn((prev) => mergeReplies(prev, [reply]));
           }}
         />
       </div>
@@ -51,7 +82,7 @@ export function CommentThread({
     <li className="min-w-0 rounded-card bg-card px-4 pt-4 pb-1 shadow-card">
       {comment ? (
         <>
-          <CommentItem comment={comment} now={now} onReply={() => setReplyTo(comment)} />
+          <CommentRow comment={comment} now={now} onReply={() => setReplyTo(comment)} />
           {replyBox(comment)}
         </>
       ) : (
@@ -63,20 +94,25 @@ export function CommentThread({
       {replies.length > 0 && (
         <div className="mt-1 mb-3 ml-3 border-l-2 border-gold/45 pl-3 sm:ml-4 sm:pl-4">
           <ol className="space-y-1" aria-label="Replies">
-            {shown.map((reply) => (
+            {replies.map((reply) => (
               <li key={reply.id} className="min-w-0 pt-2">
-                <CommentItem comment={reply} now={now} onReply={() => setReplyTo(reply)} />
+                <CommentRow comment={reply} now={now} onReply={() => setReplyTo(reply)} />
                 {replyBox(reply)}
               </li>
             ))}
           </ol>
-          {!expanded && hiddenCount > 0 && (
+          {nextCursor && remaining > 0 && (
             <button
               type="button"
-              onClick={() => setExpanded(true)}
-              className="mt-1 inline-flex min-h-11 items-center rounded-full px-3 text-sm font-bold text-gold-deep transition hover:bg-gold-soft active:scale-95"
+              onClick={() => void loadMore()}
+              disabled={status === "loading"}
+              className="mt-1 inline-flex min-h-11 items-center rounded-full px-3 text-sm font-bold text-gold-deep transition hover:bg-gold-soft active:scale-95 disabled:opacity-60"
             >
-              View {hiddenCount} more {hiddenCount === 1 ? "reply" : "replies"}
+              {status === "loading"
+                ? "Loading…"
+                : status === "error"
+                  ? "Couldn't load replies. Try again"
+                  : `View ${remaining} more ${remaining === 1 ? "reply" : "replies"}`}
             </button>
           )}
         </div>
@@ -85,12 +121,12 @@ export function CommentThread({
   );
 }
 
-function CommentItem({
+function CommentRow({
   comment,
   now,
   onReply,
 }: {
-  comment: CommentView;
+  comment: CommentItem;
   now: number;
   onReply: () => void;
 }) {
@@ -100,8 +136,8 @@ function CommentItem({
         <Avatar nickname={comment.nickname} />
         <span className="min-w-0 truncate font-bold text-espresso">{comment.nickname}</span>
         <span className="text-ink-soft" aria-hidden="true">·</span>
-        <time dateTime={comment.createdAt.toISOString()} className="shrink-0 text-ink-soft">
-          {timeAgo(comment.createdAt, now)}
+        <time dateTime={comment.createdAt} className="shrink-0 text-ink-soft">
+          {timeAgo(new Date(comment.createdAt), now)}
         </time>
       </div>
       <p className="mt-1.5 pl-10.5 leading-relaxed wrap-anywhere whitespace-pre-wrap text-ink">

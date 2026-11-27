@@ -3,6 +3,7 @@
 import { useActionState, useEffect, useEffectEvent, useId, useState } from "react";
 import { useRouter } from "next/navigation";
 import { addComment, type FormState } from "@/app/actions";
+import type { CommentItem } from "@/lib/comment-types";
 import { Honeypot } from "./Honeypot";
 import { SendIcon } from "./icons";
 
@@ -15,7 +16,8 @@ type Props = {
   /** Label for the reply target, e.g. "Anonymous Yak". */
   replyingTo?: string;
   onCancel?: () => void;
-  onDone?: () => void;
+  /** Called after a successful submit; replies come back so the thread can show them. */
+  onDone?: (reply?: CommentItem) => void;
 };
 
 export function CommentForm({ postId, parentId, replyingTo, onCancel, onDone }: Props) {
@@ -38,7 +40,7 @@ export function CommentForm({ postId, parentId, replyingTo, onCancel, onDone }: 
   // Pull in the fresh comment list once per successful submission.
   const onSuccess = useEffectEvent(() => {
     router.refresh();
-    onDone?.();
+    onDone?.(state.reply);
   });
   useEffect(() => {
     if (state.ok && state.nonce) onSuccess();

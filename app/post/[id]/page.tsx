@@ -5,7 +5,7 @@ import { getPostPage } from "@/lib/queries";
 import { timeAgo } from "@/lib/time";
 import { Avatar } from "@/components/Avatar";
 import { CommentForm } from "@/components/CommentForm";
-import { CommentList } from "@/components/CommentList";
+import { CommentsSection } from "@/components/CommentsSection";
 import { LikeButton } from "@/components/LikeButton";
 import { ReportButton } from "@/components/ReportButton";
 import { ViewCounter } from "@/components/ViewCounter";
@@ -34,7 +34,7 @@ export default function PostPage({ params }: PageProps<"/post/[id]">) {
 async function PostDetail({ id }: { id: string }) {
   const data = await getPostPage(id);
   if (!data) notFound();
-  const { post, threads, readAt: now } = data;
+  const { post, comments, readAt: now } = data;
 
   return (
     <>
@@ -86,7 +86,7 @@ async function PostDetail({ id }: { id: string }) {
         </h2>
         <CommentForm postId={post.id} />
         <div className="mt-5">
-          <CommentList postId={post.id} threads={threads} now={now} />
+          <CommentsSection postId={post.id} initial={comments} now={now} />
         </div>
       </section>
     </>

@@ -1,11 +1,13 @@
 "use server";
 
 import { Prisma } from "@prisma/client";
-import { redirect } from "next/navigation";
 import { headers } from "next/headers";
+import { redirect } from "next/navigation";
+import { isCrawler } from "@/lib/bots";
+import type { CommentItem } from "@/lib/comment-types";
 import { prisma } from "@/lib/prisma";
-import { getOrCreateIdentity, hashedIp } from "@/lib/identity";
-import { rateLimit } from "@/lib/rate-limit";
+import { hashedIp, requireIdentity, type Identity } from "@/lib/identity";
+import { rateLimit, type LimitName } from "@/lib/rate-limit";
 import {
   MAX_LINKS,
   commentSchema,
@@ -16,11 +18,41 @@ import {
   reportSchema,
 } from "@/lib/validation";
 
-export type FormState = { error?: string; ok?: boolean; nonce?: number };
+// Server Actions always answer with HTTP 200 (Next.js has no way to set their
+// status), so refusals carry the status in the result: 401 no browser cookie,
+// 403 crawler, 429 rate limited. The /api/views route returns real statuses.
+export type DeniedStatus = 401 | 403 | 429;
+
+export type FormState = {
+  error?: string;
+  status?: DeniedStatus;
+  ok?: boolean;
+  nonce?: number;
+  /** The created reply, so the thread can show it without loading every reply. */
+  reply?: CommentItem;
+};
 
 const HIDE_AFTER_REPORTS = 5;
 const DUPLICATE_WINDOW_MS = 60 * 60_000;
-const SLOW_DOWN = "You're going a bit fast. Have a sip of Ara and try again in a few minutes.";
+
+const DENIED: Record<DeniedStatus, string> = {
+  401: "Please refresh the page and try again.",
+  403: "This action isn't available.",
+  429: "You're going a bit fast. Have a sip of Ara and try again in a moment.",
+};
+type Denied = { error: string; status: DeniedStatus };
+const deny = (status: DeniedStatus): Denied => ({ error: DENIED[status], status });
+
+/** Who is writing: a real browser with the anonymous cookie, or a refusal. */
+async function writer(): Promise<Identity | Denied> {
+  if (isCrawler((await headers()).get("user-agent"))) return deny(403);
+  return (await requireIdentity()) ?? deny(401);
+}
+const isDenied = (v: Identity | Denied): v is Denied => "status" in v;
+
+async function withinLimit(name: LimitName, me: Identity): Promise<boolean> {
+  return rateLimit(name, me.hash, await hashedIp());
+}
 
 const field = (formData: FormData, name: string) => {
   const value = formData.get(name);
@@ -49,8 +81,9 @@ export async function createPost(
     return { error: `Please keep it to ${MAX_LINKS} links or fewer.` };
   }
 
-  const me = await getOrCreateIdentity();
-  if (!(await rateLimit("post", me.hash, await hashedIp()))) return { error: SLOW_DOWN };
+  const me = await writer();
+  if (isDenied(me)) return me;
+  if (!(await withinLimit("post", me))) return deny(429);
 
   const duplicate = await prisma.post.findFirst({
     where: {
@@ -76,16 +109,15 @@ export async function createPost(
 
 export type LikeResult =
   | { ok: true; liked: boolean; likeCount: number }
-  | { ok: false; error: string };
+  | { ok: false; error: string; status?: DeniedStatus };
 
 export async function toggleLike(postId: string): Promise<LikeResult> {
   const id = idSchema.safeParse(postId);
   if (!id.success) return { ok: false, error: "Post not found." };
 
-  const me = await getOrCreateIdentity();
-  if (!(await rateLimit("like", me.hash, await hashedIp()))) {
-    return { ok: false, error: SLOW_DOWN };
-  }
+  const me = await writer();
+  if (isDenied(me)) return { ok: false, ...me };
+  if (!(await withinLimit("like", me))) return { ok: false, ...deny(429) };
 
   const post = await prisma.post.findFirst({
     where: { id: id.data, hidden: false },
@@ -127,10 +159,9 @@ export async function toggleCommentLike(commentId: string): Promise<LikeResult> 
   const id = idSchema.safeParse(commentId);
   if (!id.success) return { ok: false, error: "Comment not found." };
 
-  const me = await getOrCreateIdentity();
-  if (!(await rateLimit("like", me.hash, await hashedIp()))) {
-    return { ok: false, error: SLOW_DOWN };
-  }
+  const me = await writer();
+  if (isDenied(me)) return { ok: false, ...me };
+  if (!(await withinLimit("like", me))) return { ok: false, ...deny(429) };
 
   const comment = await prisma.comment.findFirst({
     where: { id: id.data, hidden: false, post: { hidden: false } },
@@ -169,65 +200,6 @@ export async function toggleCommentLike(commentId: string): Promise<LikeResult> 
   }
 }
 
-// ---------------------------------------------------------------- views
-
-const BOT_UA =
-  /bot|crawl|spider|slurp|preview|facebookexternalhit|embedly|whatsapp|telegram|discord|curl|wget|python|httpclient|okhttp|axios|go-http|java\/|headless|phantom|puppeteer|playwright|lighthouse|pingdom|monitor/i;
-const VIEW_RETENTION_DAYS = 2;
-const CLEANUP_CHANCE = 0.02;
-
-/** Today's date in UTC, as a @db.Date value. */
-function utcDay(ms: number): Date {
-  const d = new Date(ms);
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
-}
-
-/**
- * Count a post view once per identity per UTC day.
- * Called from the client after mount, so prerenders and HTML fetchers don't count.
- */
-export async function recordView(postId: string): Promise<{ viewCount: number } | null> {
-  const id = idSchema.safeParse(postId);
-  if (!id.success) return null;
-
-  const ua = (await headers()).get("user-agent") ?? "";
-  if (!ua || BOT_UA.test(ua)) return null;
-
-  const me = await getOrCreateIdentity();
-  if (!(await rateLimit("view", me.hash, await hashedIp()))) return null;
-
-  const post = await prisma.post.findFirst({
-    where: { id: id.data, hidden: false },
-    select: { id: true, viewCount: true },
-  });
-  if (!post) return null;
-
-  const now = Date.now();
-  const inserted = await prisma.postView.createMany({
-    data: [{ postId: post.id, userHash: me.hash, day: utcDay(now) }],
-    skipDuplicates: true,
-  });
-
-  let viewCount = post.viewCount;
-  if (inserted.count > 0) {
-    const updated = await prisma.post.update({
-      where: { id: post.id },
-      data: { viewCount: { increment: 1 } },
-      select: { viewCount: true },
-    });
-    viewCount = updated.viewCount;
-  }
-
-  // Occasionally prune dedupe rows nobody needs anymore.
-  if (Math.random() < CLEANUP_CHANCE) {
-    await prisma.postView.deleteMany({
-      where: { day: { lt: utcDay(now - VIEW_RETENTION_DAYS * 86_400_000) } },
-    });
-  }
-
-  return { viewCount };
-}
-
 // ---------------------------------------------------------------- comments
 
 /**
@@ -255,8 +227,9 @@ export async function addComment(
     return { error: `Please keep it to ${MAX_LINKS} links or fewer.` };
   }
 
-  const me = await getOrCreateIdentity();
-  if (!(await rateLimit("comment", me.hash, await hashedIp()))) return { error: SLOW_DOWN };
+  const me = await writer();
+  if (isDenied(me)) return me;
+  if (!(await withinLimit("comment", me))) return deny(429);
 
   const post = await prisma.post.findFirst({
     where: { id: id.data, hidden: false },
@@ -274,7 +247,7 @@ export async function addComment(
     topLevelId = target.parentId ?? target.id;
   }
 
-  await prisma.$transaction([
+  const [created] = await prisma.$transaction([
     prisma.comment.create({
       data: {
         postId: post.id,
@@ -283,7 +256,7 @@ export async function addComment(
         nickname: me.nickname,
         authorHash: me.hash,
       },
-      select: { id: true },
+      select: { id: true, body: true, nickname: true, likeCount: true, createdAt: true },
     }),
     prisma.post.update({
       where: { id: post.id },
@@ -292,14 +265,17 @@ export async function addComment(
     }),
   ]);
 
-  return { ok: true, nonce: Date.now() };
+  const reply: CommentItem | undefined = topLevelId
+    ? { ...created, createdAt: created.createdAt.toISOString(), likedByMe: false }
+    : undefined;
+  return { ok: true, nonce: Date.now(), reply };
 }
 
 // ---------------------------------------------------------------- reports
 
 export type ReportResult =
   | { ok: true; message: string; hidden: boolean }
-  | { ok: false; error: string };
+  | { ok: false; error: string; status?: DeniedStatus };
 
 export async function reportContent(input: {
   targetType: "POST" | "COMMENT";
@@ -310,10 +286,9 @@ export async function reportContent(input: {
   if (!parsed.success) return { ok: false, error: firstError(parsed.error) };
   const { targetType, targetId, reason } = parsed.data;
 
-  const me = await getOrCreateIdentity();
-  if (!(await rateLimit("report", me.hash, await hashedIp()))) {
-    return { ok: false, error: SLOW_DOWN };
-  }
+  const me = await writer();
+  if (isDenied(me)) return { ok: false, ...me };
+  if (!(await withinLimit("report", me))) return { ok: false, ...deny(429) };
 
   try {
     const hidden = await prisma.$transaction(async (tx) => {

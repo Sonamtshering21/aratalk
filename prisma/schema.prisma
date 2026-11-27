@@ -74,17 +74,16 @@ model Like {
   @@index([userHash])
 }
 
-/// One row per identity per post per UTC day, so a view counts once a day.
-/// Rows older than 2 days are pruned; viewCount on Post keeps the total.
+/// One row per browser (anonymous identity hash) per post: a view counts once.
+/// Rows older than 30 days are pruned; viewCount on Post keeps the total.
 model PostView {
   postId    String
   userHash  String   @db.Char(64)
-  day       DateTime @db.Date
   createdAt DateTime @default(now())
   post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
 
-  @@id([postId, userHash, day])
-  @@index([day])
+  @@id([postId, userHash])
+  @@index([createdAt])
 }
 
 enum ReportTarget {

@@ -45,6 +45,7 @@ Built with Next.js 16 (App Router, Cache Components), Tailwind CSS 4, Prisma 6 a
 | `DATABASE_URL`    | PostgreSQL connection string used by the app. On Neon, use the pooled one.                                      |
 | `DIRECT_URL`      | Direct (non-pooled) connection string used by `prisma migrate`. Locally, `"${DATABASE_URL}"` is fine.           |
 | `IDENTITY_SECRET` | Salts the anonymous identity hash; at least 32 characters in production. Changing it gives every visitor a new identity. |
+| `DATABASE_POOL_SIZE`| Optional: database connections per server instance (default 5). |
 | `SEED_EXTRA_POSTS`| Optional, seed only: adds filler posts.                                                                         |
 
 In production the server refuses to start if `DATABASE_URL` or `IDENTITY_SECRET` is missing (see `instrumentation.ts`).
@@ -102,11 +103,18 @@ Generate a secret with `node -e "console.log(require('crypto').randomBytes(48).t
 
 - **Anonymous identity:** on the first like, post, comment or report, the server sets an httpOnly cookie holding a random UUID. Only `sha256(uuid + IDENTITY_SECRET)` is stored. The nickname (e.g. "Anonymous Takin") is derived from that hash. Neither the UUID nor the hash is ever sent to the browser.
 - **Writes:** all writes are Server Actions in `app/actions.ts`. Reads are in `lib/queries.ts` and always `select` explicit public fields.
-- **Moderation:** any content reported 5 times is hidden automatically. There are also rate limits (per identity and per hashed IP, stored in Postgres), a honeypot field, a limit of 2 links per post or comment, and a block on identical posts within 1 hour.
+- **Moderation:** any content reported 5 times is hidden automatically. Posts and comments have a hidden honeypot field; submissions that fill it are silently ignored. Posts are limited to 2 links, and an identical post within 1 hour is blocked.
+- **Write protection:** every write (post, comment, like, report, view batch) is checked on the server:
+  - **Real browsers only:** the user-agent filter (`lib/bots.ts`) blocks crawlers, scripts and headless browsers. In-app browsers (Telegram, Discord, Facebook, Messenger, Instagram, WhatsApp) and phone models with "bot" in their name are allowed.
+  - **Cookie required:** the anonymous browser cookie is issued when a page loads (`proxy.ts`). Writes without it are ignored.
+  - **Rate limits:** per browser ID *and* per IP, stored in Postgres: 1 post/min (and 20 posts per IP per day), 1 comment per 20 s, 30 likes/min, 1 view batch per 10 s, 10 reports/hour. `/api/views` answers `429`. Server Actions can't set an HTTP status, so they return `status: 429` in their result and the page shows a "slow down" message.
+  - **Input limits:** title 120, description 2000, comment 1000 characters; view batches of at most 50 post IDs.
+- **Pagination:** the feed loads 20 posts at a time (infinite scroll plus a "Load more" button). Comments load 20 top-level comments at a time, newest first, with "Load more comments". Each thread shows its first 3 replies and loads 20 more per "View more replies" (`/api/posts/[id]/comments`, `/api/comments/[id]/replies`).
+- **Database connections:** one shared Prisma client per server instance with a small pool (`connection_limit=5` by default, `DATABASE_POOL_SIZE` to change it).
 - **Feed tabs:** Latest, Trending and Top. Top has This week / This month / All time. The tab and range are kept in the URL (`/?tab=top&range=week`).
   - **Trending:** `(1 + likes + 2 × comments + 0.1 × views) / (ageHours + 2)^1.5` over the last 30 days.
   - **Top:** ranked by `likes + comments`.
 - **Infinite scroll:** pages of 20 come from `GET /api/feed`. Latest uses a `(createdAt, id)` cursor. Trending and Top freeze a ranked snapshot of post IDs on the first page, so likes arriving mid-scroll can't cause duplicates or skips. `GET /api/feed/new` is a cheap count used by the "new posts" pill, checked every 60 s.
-- **Views:** counted once per identity per post per UTC day (`PostView` rows), recorded by a client component after the post page mounts. Obvious bots are ignored by user-agent. Dedupe rows older than 2 days are pruned occasionally.
+- **Views:** a post's view counts once per browser, ever. It's stored as a `PostView` row with a unique `(postId, userHash)`, and `Post.viewCount` goes up only when a new row is created. A view counts when a feed card is at least 50% on screen for 2 seconds, or when the post page is opened. The browser batches viewed ids and sends them to `POST /api/views` every ~10 s, or with `navigator.sendBeacon` when the page is hidden. It remembers sent ids in `localStorage` so they aren't sent again. Obvious bots are ignored by user-agent, and `PostView` rows older than 30 days are pruned.
 
 > Ranked-feed snapshots expire after 30 minutes. A later "load more" then re-ranks, and the browser drops posts it already shows.

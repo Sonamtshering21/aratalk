@@ -9,7 +9,7 @@ const trimmed = (label: string, min: number, max: number) =>
 
 export const postSchema = z.object({
   title: trimmed("Title", 3, 120),
-  body: trimmed("Description", 1, 5000),
+  body: trimmed("Description", 1, 2000),
 });
 
 export const commentSchema = z.object({

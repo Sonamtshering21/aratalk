@@ -1,36 +1,70 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# AraTalk 🍶
 
-## Getting Started
+**No names. No shame. Just talk!**
 
-First, run the development server:
+AraTalk is a simple, anonymous, text-only discussion space for Bhutan. The name comes from Ara, the traditional drink shared among friends.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+Built with Next.js 16 (App Router, Cache Components), Tailwind CSS 4, Prisma 6 and PostgreSQL.
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Setup
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+1. Install dependencies (this also generates the Prisma client):
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+   ```bash
+   npm install
+   ```
 
-## Learn More
+2. Create the database in your local PostgreSQL:
 
-To learn more about Next.js, take a look at the following resources:
+   ```bash
+   createdb -U postgres aratalk
+   ```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+3. Create `.env` in the project root (it is git-ignored):
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+   ```env
+   DATABASE_URL="postgresql://postgres:YOUR_PASSWORD@localhost:5432/aratalk?schema=public"
+   IDENTITY_SECRET="a-long-random-string"
+   ```
 
-## Deploy on Vercel
+4. Run the migrations, seed sample posts and start the dev server:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+   ```bash
+   npm run db:migrate
+   npm run db:seed
+   npm run dev
+   ```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+   Open http://localhost:3000.
+
+## Environment variables
+
+| Variable          | Purpose                                                                                                       |
+| ----------------- | ------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`    | PostgreSQL connection string used by Prisma.                                                                  |
+| `IDENTITY_SECRET` | At least 16 characters. Salts the anonymous identity hash. Changing it gives every visitor a new identity. |
+
+Generate a secret with `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`.
+
+## Commands
+
+| Command              | What it does                                             |
+| -------------------- | -------------------------------------------------------- |
+| `npm run dev`        | Start the dev server                                     |
+| `npm run db:migrate` | Create and apply Prisma migrations (`prisma migrate dev`) |
+| `npm run db:seed`    | Wipe the data and insert the sample posts                |
+| `npm run db:studio`  | Browse the database in Prisma Studio                     |
+| `npm run build`      | Production build                                         |
+| `npm start`          | Run the production build                                 |
+| `npm run lint`       | ESLint                                                   |
+
+For production, run `npx prisma migrate deploy` instead of `db:migrate`.
+
+## How it works
+
+- **Anonymous identity:** on the first like, post, comment or report, the server sets an httpOnly cookie holding a random UUID. Only `sha256(uuid + IDENTITY_SECRET)` is stored. The nickname (e.g. "Anonymous Takin") is derived from that hash. Neither the UUID nor the hash is ever sent to the browser.
+- **Writes:** all writes are Server Actions in `app/actions.ts`. Reads are in `lib/queries.ts` and always `select` explicit public fields.
+- **Moderation:** any content reported 5 times is hidden automatically. There are also rate limits (per identity and per hashed IP), a honeypot field, a limit of 2 links per post or comment, and a block on identical posts within 1 hour.
+- **Trending:** `(1 + likes + 2 × comments) / (ageHours + 2)^1.5` over the last 30 days.
+
+> The rate limiter is in-memory, so it resets on restart and only covers a single server process. If you run several instances, move it to Redis or the database.

@@ -1,0 +1,70 @@
+// AraTalk database schema (Prisma 6, classic generator).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Post {
+  id           String    @id @default(cuid())
+  title        String    @db.VarChar(120)
+  body         String    @db.Text
+  nickname     String    @db.VarChar(60)
+  /// sha256(cookie uuid + IDENTITY_SECRET). Never select this for the client.
+  authorHash   String    @db.Char(64)
+  likeCount    Int       @default(0)
+  commentCount Int       @default(0)
+  reportCount  Int       @default(0)
+  hidden       Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+  comments     Comment[]
+  likes        Like[]
+
+  @@index([hidden, createdAt])
+  @@index([authorHash, createdAt])
+}
+
+model Comment {
+  id          String   @id @default(cuid())
+  postId      String
+  body        String   @db.Text
+  nickname    String   @db.VarChar(60)
+  authorHash  String   @db.Char(64)
+  reportCount Int      @default(0)
+  hidden      Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  post        Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([postId, hidden, createdAt])
+}
+
+model Like {
+  postId    String
+  userHash  String   @db.Char(64)
+  createdAt DateTime @default(now())
+  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@id([postId, userHash])
+  @@index([userHash])
+}
+
+enum ReportTarget {
+  POST
+  COMMENT
+}
+
+model Report {
+  id         String       @id @default(cuid())
+  targetType ReportTarget
+  targetId   String
+  userHash   String       @db.Char(64)
+  reason     String?      @db.VarChar(200)
+  createdAt  DateTime     @default(now())
+
+  @@unique([targetType, targetId, userHash])
+  @@index([targetType, targetId])
+}

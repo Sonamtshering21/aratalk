@@ -50,7 +50,7 @@ export async function createPost(
   }
 
   const me = await getOrCreateIdentity();
-  if (!rateLimit("post", me.hash, await hashedIp())) return { error: SLOW_DOWN };
+  if (!(await rateLimit("post", me.hash, await hashedIp()))) return { error: SLOW_DOWN };
 
   const duplicate = await prisma.post.findFirst({
     where: {
@@ -83,7 +83,7 @@ export async function toggleLike(postId: string): Promise<LikeResult> {
   if (!id.success) return { ok: false, error: "Post not found." };
 
   const me = await getOrCreateIdentity();
-  if (!rateLimit("like", me.hash, await hashedIp())) {
+  if (!(await rateLimit("like", me.hash, await hashedIp()))) {
     return { ok: false, error: SLOW_DOWN };
   }
 
@@ -128,7 +128,7 @@ export async function toggleCommentLike(commentId: string): Promise<LikeResult> 
   if (!id.success) return { ok: false, error: "Comment not found." };
 
   const me = await getOrCreateIdentity();
-  if (!rateLimit("like", me.hash, await hashedIp())) {
+  if (!(await rateLimit("like", me.hash, await hashedIp()))) {
     return { ok: false, error: SLOW_DOWN };
   }
 
@@ -194,7 +194,7 @@ export async function recordView(postId: string): Promise<{ viewCount: number } 
   if (!ua || BOT_UA.test(ua)) return null;
 
   const me = await getOrCreateIdentity();
-  if (!rateLimit("view", me.hash, await hashedIp())) return null;
+  if (!(await rateLimit("view", me.hash, await hashedIp()))) return null;
 
   const post = await prisma.post.findFirst({
     where: { id: id.data, hidden: false },
@@ -256,7 +256,7 @@ export async function addComment(
   }
 
   const me = await getOrCreateIdentity();
-  if (!rateLimit("comment", me.hash, await hashedIp())) return { error: SLOW_DOWN };
+  if (!(await rateLimit("comment", me.hash, await hashedIp()))) return { error: SLOW_DOWN };
 
   const post = await prisma.post.findFirst({
     where: { id: id.data, hidden: false },
@@ -311,7 +311,7 @@ export async function reportContent(input: {
   const { targetType, targetId, reason } = parsed.data;
 
   const me = await getOrCreateIdentity();
-  if (!rateLimit("report", me.hash, await hashedIp())) {
+  if (!(await rateLimit("report", me.hash, await hashedIp()))) {
     return { ok: false, error: SLOW_DOWN };
   }
 

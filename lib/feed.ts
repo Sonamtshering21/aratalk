@@ -169,12 +169,12 @@ async function rankedPage(
 ): Promise<FeedPage> {
   const offset = cursor?.k === "s" ? cursor.o : 0;
   let snapshotId = cursor?.k === "s" ? cursor.s : null;
-  let ids = snapshotId ? readSnapshot(snapshotId, readAt) : null;
+  let ids = snapshotId ? await readSnapshot(snapshotId, readAt) : null;
 
   if (!ids) {
     // First page, or the snapshot expired: rank now and freeze the result.
     ids = tab === "trending" ? await rankTrending(readAt) : await rankTop(range, readAt);
-    snapshotId = ids.length > offset + PAGE_SIZE ? saveSnapshot(ids, readAt) : null;
+    snapshotId = ids.length > offset + PAGE_SIZE ? await saveSnapshot(ids, readAt) : null;
   }
 
   const pageIds = ids.slice(offset, offset + PAGE_SIZE);
@@ -209,10 +209,15 @@ export async function getFeedPage(
   return rankedPage(tab, range, cursor?.k === "s" ? cursor : null, readAt);
 }
 
-/** Lightweight check for the "New posts" pill. */
+/** Lightweight check for the "New posts" pill. The viewer's own posts don't count. */
 export async function countPostsSince(sinceMs: number): Promise<number> {
   await connection();
+  const me = await readIdentityHash();
   return prisma.post.count({
-    where: { hidden: false, createdAt: { gt: new Date(sinceMs) } },
+    where: {
+      hidden: false,
+      createdAt: { gt: new Date(sinceMs) },
+      ...(me ? { authorHash: { not: me } } : {}),
+    },
   });
 }

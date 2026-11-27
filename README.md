@@ -20,10 +20,11 @@ Built with Next.js 16 (App Router, Cache Components), Tailwind CSS 4, Prisma 6 a
    createdb -U postgres aratalk
    ```
 
-3. Create `.env` in the project root (it is git-ignored):
+3. Copy `.env.example` to `.env` (it is git-ignored) and fill it in:
 
    ```env
    DATABASE_URL="postgresql://postgres:YOUR_PASSWORD@localhost:5432/aratalk?schema=public"
+   DIRECT_URL="${DATABASE_URL}"
    IDENTITY_SECRET="a-long-random-string"
    ```
 
@@ -41,8 +42,12 @@ Built with Next.js 16 (App Router, Cache Components), Tailwind CSS 4, Prisma 6 a
 
 | Variable          | Purpose                                                                                                       |
 | ----------------- | ------------------------------------------------------------------------------------------------------------- |
-| `DATABASE_URL`    | PostgreSQL connection string used by Prisma.                                                                  |
-| `IDENTITY_SECRET` | At least 16 characters. Salts the anonymous identity hash. Changing it gives every visitor a new identity. |
+| `DATABASE_URL`    | PostgreSQL connection string used by the app. On Neon, use the pooled one.                                      |
+| `DIRECT_URL`      | Direct (non-pooled) connection string used by `prisma migrate`. Locally, `"${DATABASE_URL}"` is fine.           |
+| `IDENTITY_SECRET` | Salts the anonymous identity hash; at least 32 characters in production. Changing it gives every visitor a new identity. |
+| `SEED_EXTRA_POSTS`| Optional, seed only: adds filler posts.                                                                         |
+
+In production the server refuses to start if `DATABASE_URL` or `IDENTITY_SECRET` is missing (see `instrumentation.ts`).
 
 Generate a secret with `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`.
 
@@ -58,17 +63,50 @@ Generate a secret with `node -e "console.log(require('crypto').randomBytes(48).t
 | `npm start`          | Run the production build                                 |
 | `npm run lint`       | ESLint                                                   |
 
-For production, run `npx prisma migrate deploy` instead of `db:migrate`.
+`npm run vercel-build` runs `prisma migrate deploy` and then `next build`. Vercel runs it automatically.
+
+## Deploy to Vercel + Neon
+
+1. **Create the database.** In [Neon](https://neon.tech), create a project and a database named `aratalk`. From **Connection Details**, copy two strings:
+   - the **pooled** connection string (its host contains `-pooler`), for `DATABASE_URL`;
+   - the **direct** connection string (pooling turned off), for `DIRECT_URL`.
+
+   Both should end in `?sslmode=require`.
+2. **Import the repo in Vercel.** Choose **Add New → Project** and pick this GitHub repo. The framework is detected as Next.js; keep the default build settings, since Vercel runs the `vercel-build` script.
+3. **Set environment variables.** Under **Settings → Environment Variables**, add these for **Production**:
+
+   | Name              | Value                                                                    |
+   | ----------------- | ------------------------------------------------------------------------ |
+   | `DATABASE_URL`    | Neon pooled connection string                                            |
+   | `DIRECT_URL`      | Neon direct connection string                                            |
+   | `IDENTITY_SECRET` | New random value: `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"` |
+
+   Use a different `IDENTITY_SECRET` from local development. For **Preview** deployments, either leave these unset or point them at a separate Neon branch. Every build runs `prisma migrate deploy`, so previews that share production's variables migrate the production database.
+4. **Deploy.** The build applies pending migrations to Neon, then builds the app.
+5. **Seed (optional, once, empty database only).** The seed wipes every table before inserting sample posts, so never run it against a database with real content. From your machine:
+
+   ```bash
+   DATABASE_URL="<neon direct url>" DIRECT_URL="<neon direct url>" npm run db:seed
+   ```
+
+   On Windows PowerShell, set the variables first: `$env:DATABASE_URL="..."; $env:DIRECT_URL="..."; npm run db:seed`.
+
+### What's production-ready
+
+- **Shared state lives in Postgres.** Rate limits and ranked-feed snapshots are stored there, so they work across serverless instances. Expired rows are pruned occasionally.
+- **Identity cookie.** It is `httpOnly`, `sameSite=lax`, and `secure` in production.
+- **Security headers.** These are set in `next.config.ts`: `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options: DENY` and `Permissions-Policy`.
+- **Missing or hidden posts return a real `404`.** Cache Components streams the page shell with a `200` before the page knows the post is gone, so `proxy.ts` checks the post id first.
 
 ## How it works
 
 - **Anonymous identity:** on the first like, post, comment or report, the server sets an httpOnly cookie holding a random UUID. Only `sha256(uuid + IDENTITY_SECRET)` is stored. The nickname (e.g. "Anonymous Takin") is derived from that hash. Neither the UUID nor the hash is ever sent to the browser.
 - **Writes:** all writes are Server Actions in `app/actions.ts`. Reads are in `lib/queries.ts` and always `select` explicit public fields.
-- **Moderation:** any content reported 5 times is hidden automatically. There are also rate limits (per identity and per hashed IP), a honeypot field, a limit of 2 links per post or comment, and a block on identical posts within 1 hour.
+- **Moderation:** any content reported 5 times is hidden automatically. There are also rate limits (per identity and per hashed IP, stored in Postgres), a honeypot field, a limit of 2 links per post or comment, and a block on identical posts within 1 hour.
 - **Feed tabs:** Latest, Trending and Top. Top has This week / This month / All time. The tab and range are kept in the URL (`/?tab=top&range=week`).
   - **Trending:** `(1 + likes + 2 × comments + 0.1 × views) / (ageHours + 2)^1.5` over the last 30 days.
   - **Top:** ranked by `likes + comments`.
 - **Infinite scroll:** pages of 20 come from `GET /api/feed`. Latest uses a `(createdAt, id)` cursor. Trending and Top freeze a ranked snapshot of post IDs on the first page, so likes arriving mid-scroll can't cause duplicates or skips. `GET /api/feed/new` is a cheap count used by the "new posts" pill, checked every 60 s.
 - **Views:** counted once per identity per post per UTC day (`PostView` rows), recorded by a client component after the post page mounts. Obvious bots are ignored by user-agent. Dedupe rows older than 2 days are pruned occasionally.
 
-> The rate limiter and the ranked-feed snapshots are in-memory, so they reset on restart and only cover a single server process. If you run several instances, move them to Redis or the database. If a snapshot expires (after 20 minutes idle), the next page is re-ranked and the browser drops posts it already shows.
+> Ranked-feed snapshots expire after 30 minutes. A later "load more" then re-ranks, and the browser drops posts it already shows.

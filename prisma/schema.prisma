@@ -5,8 +5,11 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  /// Pooled connection for the app (Neon: the "-pooler" host).
+  url       = env("DATABASE_URL")
+  /// Direct connection for migrations. Locally it can equal DATABASE_URL.
+  directUrl = env("DIRECT_URL")
 }
 
 model Post {
@@ -99,4 +102,25 @@ model Report {
 
   @@unique([targetType, targetId, userHash])
   @@index([targetType, targetId])
+}
+
+/// Fixed-window rate-limit counters, shared by every server instance.
+/// Incremented with a single INSERT … ON CONFLICT statement (see lib/rate-limit.ts).
+model RateLimit {
+  key         String   @db.VarChar(200)
+  windowStart DateTime
+  count       Int      @default(1)
+
+  @@id([key, windowStart])
+  @@index([windowStart])
+}
+
+/// Frozen ranking of post ids for Trending/Top pagination (see lib/feed.ts).
+model FeedSnapshot {
+  id        String   @id @default(uuid()) @db.Uuid
+  postIds   String[]
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+
+  @@index([expiresAt])
 }

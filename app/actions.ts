@@ -2,6 +2,7 @@
 
 import { Prisma } from "@prisma/client";
 import { redirect } from "next/navigation";
+import { headers } from "next/headers";
 import { prisma } from "@/lib/prisma";
 import { getOrCreateIdentity, hashedIp } from "@/lib/identity";
 import { rateLimit } from "@/lib/rate-limit";
@@ -166,6 +167,65 @@ export async function toggleCommentLike(commentId: string): Promise<LikeResult> 
     }
     throw e;
   }
+}
+
+// ---------------------------------------------------------------- views
+
+const BOT_UA =
+  /bot|crawl|spider|slurp|preview|facebookexternalhit|embedly|whatsapp|telegram|discord|curl|wget|python|httpclient|okhttp|axios|go-http|java\/|headless|phantom|puppeteer|playwright|lighthouse|pingdom|monitor/i;
+const VIEW_RETENTION_DAYS = 2;
+const CLEANUP_CHANCE = 0.02;
+
+/** Today's date in UTC, as a @db.Date value. */
+function utcDay(ms: number): Date {
+  const d = new Date(ms);
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+}
+
+/**
+ * Count a post view once per identity per UTC day.
+ * Called from the client after mount, so prerenders and HTML fetchers don't count.
+ */
+export async function recordView(postId: string): Promise<{ viewCount: number } | null> {
+  const id = idSchema.safeParse(postId);
+  if (!id.success) return null;
+
+  const ua = (await headers()).get("user-agent") ?? "";
+  if (!ua || BOT_UA.test(ua)) return null;
+
+  const me = await getOrCreateIdentity();
+  if (!rateLimit("view", me.hash, await hashedIp())) return null;
+
+  const post = await prisma.post.findFirst({
+    where: { id: id.data, hidden: false },
+    select: { id: true, viewCount: true },
+  });
+  if (!post) return null;
+
+  const now = Date.now();
+  const inserted = await prisma.postView.createMany({
+    data: [{ postId: post.id, userHash: me.hash, day: utcDay(now) }],
+    skipDuplicates: true,
+  });
+
+  let viewCount = post.viewCount;
+  if (inserted.count > 0) {
+    const updated = await prisma.post.update({
+      where: { id: post.id },
+      data: { viewCount: { increment: 1 } },
+      select: { viewCount: true },
+    });
+    viewCount = updated.viewCount;
+  }
+
+  // Occasionally prune dedupe rows nobody needs anymore.
+  if (Math.random() < CLEANUP_CHANCE) {
+    await prisma.postView.deleteMany({
+      where: { day: { lt: utcDay(now - VIEW_RETENTION_DAYS * 86_400_000) } },
+    });
+  }
+
+  return { viewCount };
 }
 
 // ---------------------------------------------------------------- comments

@@ -20,6 +20,8 @@ type SeedPost = {
   title: string;
   body: string;
   likes: number;
+  /** Total views; defaults to a believable multiple of the engagement. */
+  views?: number;
   comments: SeedComment[];
 };
 
@@ -56,6 +58,7 @@ const POSTS: SeedPost[] = [
     title: "Feeling nervous about my first job interview",
     body: "I have an interview next week for a civil service position. I've been studying a lot but I still feel nervous. Any tips from people who've been through it?",
     likes: 21,
+    views: 1240,
     comments: [
       {
         author: "e",
@@ -105,6 +108,7 @@ const POSTS: SeedPost[] = [
     title: "Missing home while studying abroad",
     body: "I'm studying in Australia and some nights I really miss suja and the sound of prayer wheels. How do others deal with homesickness?",
     likes: 26,
+    views: 2380,
     comments: [
       { author: "c", hoursAgo: 28, body: "Find the Bhutanese community there! There are more of us than you'd think." },
       { author: "h", hoursAgo: 25, body: "Video call your family during dinner time. It helps a lot." },
@@ -156,6 +160,7 @@ async function main() {
   await prisma.commentLike.deleteMany();
   await prisma.like.deleteMany();
   await prisma.comment.deleteMany();
+  await prisma.postView.deleteMany();
   await prisma.post.deleteMany();
 
   // Like rows from fake visitors, so likeCount always matches reality.
@@ -175,6 +180,7 @@ async function main() {
         createdAt: hoursAgo(p.hoursAgo),
         likeCount: p.likes,
         commentCount: total, // includes replies
+        viewCount: p.views ?? p.likes * 9 + total * 14 + (p.title.length % 17),
         likes: { create: likers(p.title, p.likes) },
       },
       select: { id: true },
@@ -208,6 +214,28 @@ async function main() {
       }
     }
   }
+
+  // Optional filler so infinite scroll has something to page through:
+  //   SEED_EXTRA_POSTS=60 npm run db:seed
+  const extra = Math.min(500, Math.max(0, Number(process.env.SEED_EXTRA_POSTS) || 0));
+  const topics = ["Thimphu traffic", "best chilli in the market", "weekend in Paro", "rainy season plans", "favourite festival", "learning Dzongkha", "a good book", "football on Sunday", "power cuts again", "finding a flat"];
+  for (let i = 0; i < extra; i++) {
+    const topic = topics[i % topics.length];
+    const likes = (i * 7) % 23;
+    await prisma.post.create({
+      data: {
+        title: `Chat #${i + 1}: ${topic}`,
+        body: `What does everyone think about ${topic}? Just a sample post for scrolling (#${i + 1}).`,
+        ...person(`extra-${i % 9}`),
+        createdAt: hoursAgo(130 + i * 5),
+        likeCount: likes,
+        viewCount: likes * 8 + (i % 11) * 3,
+        likes: { create: likers(`extra-${i}`, likes) },
+      },
+      select: { id: true },
+    });
+  }
+  if (extra) console.log(`Added ${extra} filler posts.`);
 
   console.log(`Seeded ${POSTS.length} posts and ${commentTotal} comments/replies. 🍶`);
 }

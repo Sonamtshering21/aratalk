@@ -1,9 +1,8 @@
-import Link from "next/link";
 import { Suspense } from "react";
-import { getFeed, type FeedTab } from "@/lib/queries";
+import { getFeedPage } from "@/lib/feed";
+import { parseFeedParams, type FeedTab, type TopRange } from "@/lib/feed-types";
+import { FeedList } from "@/components/FeedList";
 import { FeedTabs } from "@/components/FeedTabs";
-import { PostCard } from "@/components/PostCard";
-import { EmptyState } from "@/components/EmptyState";
 import { FeedSkeleton } from "@/components/Skeletons";
 
 export default function HomePage({ searchParams }: PageProps<"/">) {
@@ -26,37 +25,22 @@ export default function HomePage({ searchParams }: PageProps<"/">) {
           </>
         }
       >
-        {searchParams.then((sp) => (
-          <Feed tab={sp.tab === "trending" ? "trending" : "newest"} />
-        ))}
+        {searchParams.then((sp) => {
+          const { tab, range } = parseFeedParams(sp);
+          return <Feed tab={tab} range={range} />;
+        })}
       </Suspense>
     </>
   );
 }
 
-async function Feed({ tab }: { tab: FeedTab }) {
-  const { posts, readAt } = await getFeed(tab);
-
+async function Feed({ tab, range }: { tab: FeedTab; range: TopRange }) {
+  const page = await getFeedPage(tab, range, null);
   return (
     <>
-      <FeedTabs active={tab} />
-      {posts.length === 0 ? (
-        <EmptyState emoji="🫖" title="It's quiet around the fire">
-          <p>
-            No one has spoken up yet.{" "}
-            <Link href="/new" className="font-bold text-gold-deep underline underline-offset-2">
-              Start the first conversation
-            </Link>
-            .
-          </p>
-        </EmptyState>
-      ) : (
-        <div className="space-y-4">
-          {posts.map((post) => (
-            <PostCard key={post.id} post={post} now={readAt} />
-          ))}
-        </div>
-      )}
+      <FeedTabs active={tab} range={range} />
+      {/* A refresh brings a new readAt, which resets the scrolled list. */}
+      <FeedList key={`${tab}:${range}:${page.readAt}`} tab={tab} range={range} initial={page} />
     </>
   );
 }

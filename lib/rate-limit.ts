@@ -13,6 +13,7 @@ export const LIMITS = {
   comment: { max: 20, windowMs: 10 * 60_000 },
   like: { max: 60, windowMs: 60_000 },
   report: { max: 20, windowMs: 10 * 60_000 },
+  view: { max: 120, windowMs: 10 * 60_000 },
 } as const;
 
 export type LimitName = keyof typeof LIMITS;

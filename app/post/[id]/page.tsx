@@ -8,6 +8,8 @@ import { CommentForm } from "@/components/CommentForm";
 import { CommentList } from "@/components/CommentList";
 import { LikeButton } from "@/components/LikeButton";
 import { ReportButton } from "@/components/ReportButton";
+import { ViewCounter } from "@/components/ViewCounter";
+import { formatCount } from "@/lib/format";
 import { PostPageSkeleton } from "@/components/Skeletons";
 import { ArrowLeftIcon, ChatIcon } from "@/components/icons";
 
@@ -67,9 +69,10 @@ async function PostDetail({ id }: { id: string }) {
               className="inline-flex min-h-11 items-center gap-1.5 rounded-full px-3 font-bold text-ink-soft transition hover:bg-cream hover:text-espresso"
             >
               <ChatIcon size={22} />
-              <span className="tabular-nums">{post.commentCount}</span>
+              <span className="tabular-nums">{formatCount(post.commentCount)}</span>
               <span className="sr-only">comments</span>
             </a>
+            <ViewCounter postId={post.id} initialCount={post.viewCount} />
           </div>
           <div className="ml-auto">
             <ReportButton targetType="POST" targetId={post.id} hiddenRedirect="/" />

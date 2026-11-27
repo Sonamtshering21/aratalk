@@ -1,31 +1,34 @@
 import Link from "next/link";
-import { excerpt, type PostView } from "@/lib/queries";
+import type { FeedPost } from "@/lib/feed-types";
+import { formatCount } from "@/lib/format";
 import { timeAgo } from "@/lib/time";
-import { LikeButton } from "./LikeButton";
-import { ChatIcon } from "./icons";
 import { Avatar } from "./Avatar";
+import { LikeButton } from "./LikeButton";
+import { ChatIcon, EyeIcon } from "./icons";
 
-export function PostCard({ post, now }: { post: PostView; now: number }) {
+// Renders on the server (first page) and the client (infinite scroll pages).
+export function PostCard({ post, now }: { post: FeedPost; now: number }) {
   const href = `/post/${post.id}`;
+  const createdAt = new Date(post.createdAt);
   return (
-    <article className="group relative rounded-card bg-card p-5 shadow-card transition hover:-translate-y-0.5 hover:shadow-card-hover">
-      <div className="mb-3 flex items-center gap-2.5 text-sm">
+    <article className="group relative min-w-0 rounded-card bg-card p-5 shadow-card transition hover:-translate-y-0.5 hover:shadow-card-hover">
+      <div className="mb-3 flex min-w-0 items-center gap-2.5 text-sm">
         <Avatar nickname={post.nickname} />
         <span className="min-w-0 truncate font-bold text-espresso">{post.nickname}</span>
         <span className="text-ink-soft" aria-hidden="true">·</span>
-        <time dateTime={post.createdAt.toISOString()} className="shrink-0 text-ink-soft">
-          {timeAgo(post.createdAt, now)}
+        <time dateTime={post.createdAt} className="shrink-0 text-ink-soft">
+          {timeAgo(createdAt, now)}
         </time>
       </div>
 
-      <h2 className="text-lg leading-snug font-extrabold break-words text-ink">
+      <h2 className="text-lg leading-snug font-extrabold wrap-anywhere text-ink">
         {/* Stretched link: the whole card is tappable, buttons sit above it. */}
         <Link href={href} className="after:absolute after:inset-0 after:rounded-card">
           {post.title}
         </Link>
       </h2>
-      <p className="mt-1.5 line-clamp-3 break-words text-[0.95rem] leading-relaxed text-ink-soft">
-        {excerpt(post.body)}
+      <p className="mt-1.5 line-clamp-3 text-[0.95rem] leading-relaxed wrap-anywhere text-ink-soft">
+        {post.excerpt}
       </p>
 
       <div className="-ml-3 mt-3 flex items-center gap-1">
@@ -36,8 +39,16 @@ export function PostCard({ post, now }: { post: PostView; now: number }) {
           aria-label={`${post.commentCount} comments`}
         >
           <ChatIcon size={19} />
-          <span className="tabular-nums">{post.commentCount}</span>
+          <span className="tabular-nums">{formatCount(post.commentCount)}</span>
         </Link>
+        <span
+          className="ml-auto inline-flex min-h-11 items-center gap-1.5 px-1 text-sm font-semibold text-ink-soft/90"
+          title={`${post.viewCount.toLocaleString("en")} views`}
+        >
+          <EyeIcon size={18} />
+          <span className="tabular-nums">{formatCount(post.viewCount)}</span>
+          <span className="sr-only">views</span>
+        </span>
       </div>
     </article>
   );

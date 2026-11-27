@@ -18,11 +18,13 @@ model Post {
   authorHash   String    @db.Char(64)
   likeCount    Int       @default(0)
   commentCount Int       @default(0)
+  viewCount    Int       @default(0)
   reportCount  Int       @default(0)
   hidden       Boolean   @default(false)
   createdAt    DateTime  @default(now())
   comments     Comment[]
   likes        Like[]
+  views        PostView[]
 
   @@index([hidden, createdAt])
   @@index([authorHash, createdAt])
@@ -67,6 +69,19 @@ model Like {
 
   @@id([postId, userHash])
   @@index([userHash])
+}
+
+/// One row per identity per post per UTC day, so a view counts once a day.
+/// Rows older than 2 days are pruned; viewCount on Post keeps the total.
+model PostView {
+  postId    String
+  userHash  String   @db.Char(64)
+  day       DateTime @db.Date
+  createdAt DateTime @default(now())
+  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@id([postId, userHash, day])
+  @@index([day])
 }
 
 enum ReportTarget {

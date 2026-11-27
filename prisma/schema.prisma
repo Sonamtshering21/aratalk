@@ -102,6 +102,25 @@ model PostShare {
   @@index([userHash])
 }
 
+/// Last heartbeat per browser (anonymous identity hash), for "reading now".
+/// No IPs; rows idle for a day are pruned.
+model Presence {
+  userHash String   @id @db.Char(64)
+  lastSeen DateTime
+
+  @@index([lastSeen])
+}
+
+/// One row per browser per calendar month in Bhutan time ("2026-11"),
+/// for "visitors this month". Months before last month are pruned.
+model MonthlyVisitor {
+  month     String   @db.Char(7)
+  userHash  String   @db.Char(64)
+  createdAt DateTime @default(now())
+
+  @@id([month, userHash])
+}
+
 enum ReportTarget {
   POST
   COMMENT

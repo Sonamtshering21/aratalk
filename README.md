@@ -122,6 +122,12 @@ Generate a secret with `node -e "console.log(require('crypto').randomBytes(48).t
   - **Rate limits:** stored in Postgres. Per browser ID: 1 post/min, 1 comment per 20 s, 30 likes/min, 1 view batch per 10 s, 10 reports/hour. Per IP, 10× those limits plus 100 posts per day. Mobile carriers share IPs, so the per-browser limits do most of the work and the per-IP limits only stop large-scale abuse. `/api/views` answers `429`. Server Actions can't set an HTTP status, so they return `status: 429` in their result and the page shows a "slow down" message.
   - **Input limits:** title 120, description 2000, comment 1000 characters; view batches of at most 50 post IDs.
 - **Sharing:** the Share button opens the phone's native share sheet (`navigator.share`). Where that isn't available, it opens a small sheet with Copy link, Telegram, WhatsApp, Facebook, Messenger (an app link on phones; on desktop it copies the link) and X. A share counts once per browser per post (`PostShare`, `Post.shareCount`), when native sharing completes, a target is tapped, or the link is copied. Cancelled native shares don't count. Shares add a small factor (0.5 each) to the Trending score.
+- **Visitor stats:** the home page shows "🟢 12 reading now · 👀 1.2K visitors this month".
+  - **Heartbeat:** every page sends a tiny heartbeat (`POST /api/presence`) on load, then about once a minute while the tab is visible; it pauses while the tab is hidden.
+  - **Reading now:** browsers with a heartbeat in the last 2½ minutes.
+  - **Visitors this month:** unique browsers in the current calendar month, in Bhutan time (UTC+6).
+  - **Rules:** bots and requests without the anonymous cookie don't count. Only the anonymous identity hash is stored (no IPs), and only counts are ever returned.
+  - **Cost:** the numbers are cached for 30 seconds per server instance, and old rows are pruned automatically.
 - **Link previews:** each post has its own title, description and a 1200×630 image (`app/post/[id]/opengraph-image.tsx`). Hidden or missing posts get a generic AraTalk card.
 - **Pagination:** the feed loads 20 posts at a time (infinite scroll plus a "Load more" button). Comments load 20 top-level comments at a time, newest first, with "Load more comments". Each thread shows its first 3 replies and loads 20 more per "View more replies" (`/api/posts/[id]/comments`, `/api/comments/[id]/replies`).
 - **Database connections:** one shared Prisma client per server instance with a small pool (`connection_limit=5` by default, `DATABASE_POOL_SIZE` to change it).

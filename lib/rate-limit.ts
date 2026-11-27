@@ -7,7 +7,7 @@ import { prisma } from "./prisma";
 // per-browser limits do most of the work and the per-IP limits (10x looser)
 // only stop large-scale abuse from one address.
 
-type Rule = { max: number; windowMs: number };
+type Rule = { max: number; windowMs: number; /** per-IP limit = max × this (default IP_MULTIPLIER) */ ipFactor?: number };
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -20,6 +20,9 @@ export const LIMITS = {
   share: { max: 30, windowMs: MINUTE }, // same rule as likes, its own bucket
   view: { max: 1, windowMs: 10_000 }, // one view batch
   report: { max: 10, windowMs: HOUR },
+  // Heartbeats (~1/min/tab). Idempotent per browser; a whole carrier NAT can
+  // share one IP, so the per-IP allowance is much looser than for writes.
+  presence: { max: 3, windowMs: MINUTE, ipFactor: 100 },
 } satisfies Record<string, Rule>;
 
 /** Per-IP limit = this many times the per-browser limit. */
@@ -44,7 +47,7 @@ export async function rateLimit(
   const rule = LIMITS[name];
   const checks: { key: string; rule: Rule }[] = [
     { key: `${name}:id:${identityHash}`, rule },
-    { key: `${name}:ip:${ipHash}`, rule: { ...rule, max: rule.max * IP_MULTIPLIER } },
+    { key: `${name}:ip:${ipHash}`, rule: { ...rule, max: rule.max * ("ipFactor" in rule ? rule.ipFactor : IP_MULTIPLIER) } },
   ];
   const daily = IP_DAILY[name];
   if (daily) checks.push({ key: `${name}:ipday:${ipHash}`, rule: daily });

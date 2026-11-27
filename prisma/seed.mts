@@ -159,6 +159,8 @@ const POSTS: SeedPost[] = [
 
 async function main() {
   console.log("Clearing old data…");
+  await prisma.presence.deleteMany();
+  await prisma.monthlyVisitor.deleteMany();
   await prisma.feedSnapshot.deleteMany();
   await prisma.rateLimit.deleteMany();
   await prisma.report.deleteMany();

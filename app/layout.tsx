@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Nunito } from "next/font/google";
 import { Header } from "@/components/Header";
+import { Heartbeat } from "@/components/Heartbeat";
 import { SITE_URL } from "@/lib/site";
 import "./globals.css";
 
@@ -46,6 +47,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     <html lang="en" className={`${nunito.variable} h-full antialiased`}>
       <body className="flex min-h-full flex-col bg-cream font-sans text-ink">
         <Header />
+        <Heartbeat />
         <main className="mx-auto w-full max-w-2xl flex-1 px-4 pt-6 pb-16">{children}</main>
         <footer className="border-t border-espresso/10 bg-cream-deep/60">
           <div className="mx-auto max-w-2xl space-y-1.5 px-4 py-6 text-xs leading-relaxed text-ink-soft">

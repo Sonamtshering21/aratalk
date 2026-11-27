@@ -1,4 +1,6 @@
 import { Suspense } from "react";
+import { loadVisitorStats } from "@/lib/visitor-stats";
+import { VisitorStatsLine, VisitorStatsPlaceholder } from "@/components/VisitorStatsLine";
 import { getFeedPage } from "@/lib/feed";
 import { parseFeedParams, type FeedTab, type TopRange } from "@/lib/feed-types";
 import { FeedList } from "@/components/FeedList";
@@ -9,6 +11,9 @@ import { FeedSkeleton } from "@/components/Skeletons";
 export default function HomePage({ searchParams }: PageProps<"/">) {
   return (
     <>
+      <Suspense fallback={<VisitorStatsPlaceholder />}>
+        <VisitorStats />
+      </Suspense>
       <section className="mb-6">
         <h1 className="text-2xl font-extrabold tracking-tight text-espresso sm:text-3xl">
           Pull up a seat. 🍶
@@ -33,6 +38,11 @@ export default function HomePage({ searchParams }: PageProps<"/">) {
       </Suspense>
     </>
   );
+}
+
+async function VisitorStats() {
+  const stats = await loadVisitorStats(); // cached ~30 s on the server
+  return stats ? <VisitorStatsLine initial={stats} /> : <VisitorStatsPlaceholder />;
 }
 
 async function Feed({ tab, range }: { tab: FeedTab; range: TopRange }) {

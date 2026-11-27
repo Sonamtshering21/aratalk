@@ -8,13 +8,30 @@ const nunito = Nunito({
   subsets: ["latin"],
 });
 
+const SITE_TITLE = "AraTalk – No names. No shame. Just talk!";
+const SITE_DESCRIPTION =
+  "An anonymous, text-only place for Bhutan to talk, like friends sharing a cup of Ara. No sign-up, no names.";
+
+// Icons come from app/icon.svg and app/apple-icon.png (file conventions).
 export const metadata: Metadata = {
   title: {
-    default: "AraTalk: No names. No shame. Just talk!",
+    default: SITE_TITLE,
     template: "%s · AraTalk",
   },
-  description:
-    "An anonymous, text-only place for Bhutan to talk, like friends sharing a cup of Ara.",
+  description: SITE_DESCRIPTION,
+  applicationName: "AraTalk",
+  openGraph: {
+    type: "website",
+    siteName: "AraTalk",
+    title: SITE_TITLE,
+    description: SITE_DESCRIPTION,
+    locale: "en_US",
+  },
+  twitter: {
+    card: "summary",
+    title: SITE_TITLE,
+    description: SITE_DESCRIPTION,
+  },
 };
 
 export const viewport: Viewport = {

@@ -7,7 +7,9 @@ import { prisma } from "@/lib/prisma";
 //    require it and never create it, so cookie-less scripts are ignored.
 // 2. Returns a real 404 for missing or hidden posts. With Cache Components the
 //    page shell streams with a 200 before the post is loaded, so notFound()
-//    inside the page can't change the status. It's one primary-key lookup.
+//    inside the page can't change the status. It's one primary-key lookup, and
+//    only for full page loads: in-app navigations, prefetches and server
+//    actions skip it (the page's own notFound() covers them, status unused).
 
 export const config = {
   matcher: ["/((?!_next/|api/|icon|apple-icon|favicon|robots\\.txt|sitemap\\.xml).*)"],
@@ -15,10 +17,25 @@ export const config = {
 
 const POST_PATH = /^\/post\/([^/]+)\/?$/;
 
+/**
+ * A full document load, as opposed to an in-app navigation, a link prefetch or a
+ * server action. Next.js strips its `rsc`/prefetch headers before Proxy runs,
+ * but client navigations and prefetches still carry `next-url`, and browsers
+ * mark real page loads with `sec-fetch-dest: document`. Crawlers send neither
+ * fetch-metadata header, so they still get the real 404.
+ */
+function isDocumentRead(request: NextRequest): boolean {
+  if (request.method !== "GET" && request.method !== "HEAD") return false;
+  const h = request.headers;
+  if (h.has("next-url")) return false;
+  const dest = h.get("sec-fetch-dest");
+  return dest === null || dest === "document";
+}
+
 export async function proxy(request: NextRequest) {
   let response = NextResponse.next();
 
-  const match = POST_PATH.exec(request.nextUrl.pathname);
+  const match = isDocumentRead(request) ? POST_PATH.exec(request.nextUrl.pathname) : null;
   if (match) {
     const id = decodeURIComponent(match[1] ?? "");
     const post =

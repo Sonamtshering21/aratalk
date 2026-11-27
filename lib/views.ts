@@ -16,31 +16,22 @@ export async function recordViews(
   postIds: string[],
   userHash: string,
 ): Promise<Record<string, number>> {
-  const visible = await prisma.post.findMany({
-    where: { id: { in: postIds }, hidden: false },
-    select: { id: true },
-  });
-  if (visible.length === 0) return {};
-  const ids = visible.map((p) => p.id);
-
-  const counts = await prisma.$transaction(async (tx) => {
-    // Unique (postId, userHash): repeats are skipped, only new rows come back.
-    const created = await tx.postView.createManyAndReturn({
-      data: ids.map((postId) => ({ postId, userHash })),
-      skipDuplicates: true,
-      select: { postId: true },
-    });
-    if (created.length > 0) {
-      await tx.post.updateMany({
-        where: { id: { in: created.map((c) => c.postId) } },
-        data: { viewCount: { increment: 1 } },
-      });
-    }
-    return tx.post.findMany({
-      where: { id: { in: ids } },
-      select: { id: true, viewCount: true },
-    });
-  });
+  // One statement: keep visible posts, insert new (postId, userHash) rows,
+  // bump viewCount only for rows that were actually inserted, return counts.
+  const rows = await prisma.$queryRaw<{ id: string; viewCount: number }[]>`
+    WITH vis AS (
+      SELECT "id", "viewCount" FROM "Post" WHERE "id" = ANY(${postIds}::text[]) AND "hidden" = false
+    ), ins AS (
+      INSERT INTO "PostView" ("postId", "userHash")
+      SELECT "id", ${userHash} FROM vis
+      ON CONFLICT DO NOTHING RETURNING "postId"
+    ), upd AS (
+      UPDATE "Post" p SET "viewCount" = p."viewCount" + 1
+      FROM ins WHERE p."id" = ins."postId"
+      RETURNING p."id", p."viewCount"
+    )
+    SELECT v."id", COALESCE(u."viewCount", v."viewCount") AS "viewCount"
+    FROM vis v LEFT JOIN upd u ON u."id" = v."id"`;
 
   if (Math.random() < CLEANUP_CHANCE) {
     await prisma.postView.deleteMany({
@@ -48,5 +39,5 @@ export async function recordViews(
     });
   }
 
-  return Object.fromEntries(counts.map((c) => [c.id, c.viewCount]));
+  return Object.fromEntries(rows.map((r) => [r.id, r.viewCount]));
 }

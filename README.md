@@ -93,6 +93,17 @@ Generate a secret with `node -e "console.log(require('crypto').randomBytes(48).t
 
    On Windows PowerShell, set the variables first: `$env:DATABASE_URL="..."; $env:DIRECT_URL="..."; npm run db:seed`.
 
+### Performance
+
+- **Region:** functions run in `sin1` (Singapore, set in `vercel.json`), next to the Neon database. Keep the Neon project in Singapore too; otherwise every query crosses an ocean.
+- **Connections:** `DATABASE_URL` must be Neon's **pooled** connection string (host contains `-pooler`). The app adds `connection_limit=5`, `pool_timeout=15`, `connect_timeout=15` (Neon wakes from scale-to-zero) and `pgbouncer=true` for pooled hosts, unless the URL sets them. Production logs a warning if the direct host is used.
+- **Few round trips:**
+  - Feed pages are one SQL query each, and ranked tabs write nothing until you scroll to page 2.
+  - The post page loads the post and its first comments in parallel, each in one query (Prisma `relationJoins`).
+  - Likes, shares and view batches are single statements.
+  - `proxy.ts` only queries the database for full page loads of `/post/[id]`, not for in-app navigation, prefetches or form actions.
+- **Instant feedback:** switching tabs or ranges highlights the new tab and shows skeleton cards immediately while the data loads.
+
 ### What's production-ready
 
 - **Shared state lives in Postgres.** Rate limits and ranked-feed snapshots are stored there, so they work across serverless instances. Expired rows are pruned occasionally.

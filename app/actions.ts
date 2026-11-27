@@ -83,16 +83,15 @@ export async function createPost(
 
   const me = await writer();
   if (isDenied(me)) return me;
-  if (!(await withinLimit("post", me))) return deny(429);
-
-  const duplicate = await prisma.post.findFirst({
-    where: {
-      title,
-      body,
-      createdAt: { gte: new Date(Date.now() - DUPLICATE_WINDOW_MS) },
-    },
-    select: { id: true },
-  });
+  // Independent checks, one round trip.
+  const [allowed, duplicate] = await Promise.all([
+    withinLimit("post", me),
+    prisma.post.findFirst({
+      where: { title, body, createdAt: { gte: new Date(Date.now() - DUPLICATE_WINDOW_MS) } },
+      select: { id: true },
+    }),
+  ]);
+  if (!allowed) return deny(429);
   if (duplicate) {
     return { error: "This exact post was already shared in the last hour." };
   }
@@ -117,41 +116,30 @@ export async function toggleLike(postId: string): Promise<LikeResult> {
 
   const me = await writer();
   if (isDenied(me)) return { ok: false, ...me };
-  if (!(await withinLimit("like", me))) return { ok: false, ...deny(429) };
-
-  const post = await prisma.post.findFirst({
-    where: { id: id.data, hidden: false },
-    select: { id: true },
-  });
+  // Independent checks, one round trip.
+  const [allowed, post] = await Promise.all([
+    withinLimit("like", me),
+    prisma.post.findFirst({ where: { id: id.data, hidden: false }, select: { id: true } }),
+  ]);
+  if (!allowed) return { ok: false, ...deny(429) };
   if (!post) return { ok: false, error: "Post not found." };
 
-  try {
-    return await prisma.$transaction(async (tx) => {
-      const removed = await tx.like.deleteMany({
-        where: { postId: post.id, userHash: me.hash },
-      });
-      const liked = removed.count === 0;
-      if (liked) {
-        await tx.like.create({ data: { postId: post.id, userHash: me.hash } });
-      }
-      const updated = await tx.post.update({
-        where: { id: post.id },
-        data: { likeCount: { increment: liked ? 1 : -1 } },
-        select: { likeCount: true },
-      });
-      return { ok: true as const, liked, likeCount: updated.likeCount };
-    });
-  } catch (e) {
-    // Two quick taps racing each other: the like already exists.
-    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
-      const current = await prisma.post.findUnique({
-        where: { id: post.id },
-        select: { likeCount: true },
-      });
-      return { ok: true, liked: true, likeCount: current?.likeCount ?? 0 };
-    }
-    throw e;
-  }
+  // Toggle in one atomic statement: remove the like if it exists, otherwise add
+  // it, and move the counter by the same amount.
+  const [r] = await prisma.$queryRaw<{ deleted: number; likeCount: number }[]>`
+    WITH del AS (
+      DELETE FROM "Like" WHERE "postId" = ${post.id} AND "userHash" = ${me.hash} RETURNING 1
+    ), ins AS (
+      INSERT INTO "Like" ("postId", "userHash")
+      SELECT ${post.id}, ${me.hash} WHERE NOT EXISTS (SELECT 1 FROM del)
+      ON CONFLICT DO NOTHING RETURNING 1
+    ), upd AS (
+      UPDATE "Post" SET "likeCount" = "likeCount" + (SELECT count(*) FROM ins) - (SELECT count(*) FROM del)
+      WHERE "id" = ${post.id} RETURNING "likeCount"
+    )
+    SELECT (SELECT count(*) FROM del)::int AS "deleted", (SELECT "likeCount" FROM upd) AS "likeCount"`;
+  // A concurrent tap may have added it first (insert skipped): it is liked either way.
+  return { ok: true, liked: r.deleted === 0, likeCount: r.likeCount };
 }
 
 /** Like/unlike a comment or reply. Shares the post like rate limit. */
@@ -161,43 +149,29 @@ export async function toggleCommentLike(commentId: string): Promise<LikeResult> 
 
   const me = await writer();
   if (isDenied(me)) return { ok: false, ...me };
-  if (!(await withinLimit("like", me))) return { ok: false, ...deny(429) };
-
-  const comment = await prisma.comment.findFirst({
-    where: { id: id.data, hidden: false, post: { hidden: false } },
-    select: { id: true },
-  });
+  const [allowed, comment] = await Promise.all([
+    withinLimit("like", me),
+    prisma.comment.findFirst({
+      where: { id: id.data, hidden: false, post: { hidden: false } },
+      select: { id: true },
+    }),
+  ]);
+  if (!allowed) return { ok: false, ...deny(429) };
   if (!comment) return { ok: false, error: "Comment not found." };
 
-  try {
-    return await prisma.$transaction(async (tx) => {
-      const removed = await tx.commentLike.deleteMany({
-        where: { commentId: comment.id, userHash: me.hash },
-      });
-      const liked = removed.count === 0;
-      if (liked) {
-        await tx.commentLike.create({
-          data: { commentId: comment.id, userHash: me.hash },
-          select: { commentId: true },
-        });
-      }
-      const updated = await tx.comment.update({
-        where: { id: comment.id },
-        data: { likeCount: { increment: liked ? 1 : -1 } },
-        select: { likeCount: true },
-      });
-      return { ok: true as const, liked, likeCount: updated.likeCount };
-    });
-  } catch (e) {
-    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
-      const current = await prisma.comment.findUnique({
-        where: { id: comment.id },
-        select: { likeCount: true },
-      });
-      return { ok: true, liked: true, likeCount: current?.likeCount ?? 0 };
-    }
-    throw e;
-  }
+  const [r] = await prisma.$queryRaw<{ deleted: number; likeCount: number }[]>`
+    WITH del AS (
+      DELETE FROM "CommentLike" WHERE "commentId" = ${comment.id} AND "userHash" = ${me.hash} RETURNING 1
+    ), ins AS (
+      INSERT INTO "CommentLike" ("commentId", "userHash")
+      SELECT ${comment.id}, ${me.hash} WHERE NOT EXISTS (SELECT 1 FROM del)
+      ON CONFLICT DO NOTHING RETURNING 1
+    ), upd AS (
+      UPDATE "Comment" SET "likeCount" = "likeCount" + (SELECT count(*) FROM ins) - (SELECT count(*) FROM del)
+      WHERE "id" = ${comment.id} RETURNING "likeCount"
+    )
+    SELECT (SELECT count(*) FROM del)::int AS "deleted", (SELECT "likeCount" FROM upd) AS "likeCount"`;
+  return { ok: true, liked: r.deleted === 0, likeCount: r.likeCount };
 }
 
 // ---------------------------------------------------------------- shares
@@ -217,31 +191,25 @@ export async function recordShare(postId: string): Promise<ShareResult> {
 
   const me = await writer();
   if (isDenied(me)) return { ok: false, ...me };
-  if (!(await withinLimit("share", me))) return { ok: false, ...deny(429) };
-
-  const post = await prisma.post.findFirst({
-    where: { id: id.data, hidden: false },
-    select: { id: true, shareCount: true },
-  });
+  const [allowed, post] = await Promise.all([
+    withinLimit("share", me),
+    prisma.post.findFirst({ where: { id: id.data, hidden: false }, select: { id: true } }),
+  ]);
+  if (!allowed) return { ok: false, ...deny(429) };
   if (!post) return { ok: false, error: "Post not found." };
 
-  return prisma.$transaction(async (tx) => {
-    // Unique (postId, userHash): a repeat share by the same browser is skipped.
-    const created = await tx.postShare.createMany({
-      data: [{ postId: post.id, userHash: me.hash }],
-      skipDuplicates: true,
-    });
-    if (created.count === 0) {
-      const current = await tx.post.findUnique({ where: { id: post.id }, select: { shareCount: true } });
-      return { ok: true as const, shareCount: current?.shareCount ?? post.shareCount, counted: false };
-    }
-    const updated = await tx.post.update({
-      where: { id: post.id },
-      data: { shareCount: { increment: 1 } },
-      select: { shareCount: true },
-    });
-    return { ok: true as const, shareCount: updated.shareCount, counted: true };
-  });
+  // Unique (postId, userHash): a repeat share by the same browser is skipped,
+  // and the counter only moves when a row was added. One statement.
+  const [r] = await prisma.$queryRaw<{ counted: number; shareCount: number }[]>`
+    WITH ins AS (
+      INSERT INTO "PostShare" ("postId", "userHash") VALUES (${post.id}, ${me.hash})
+      ON CONFLICT DO NOTHING RETURNING 1
+    ), upd AS (
+      UPDATE "Post" SET "shareCount" = "shareCount" + (SELECT count(*) FROM ins)
+      WHERE "id" = ${post.id} RETURNING "shareCount"
+    )
+    SELECT (SELECT count(*) FROM ins)::int AS "counted", (SELECT "shareCount" FROM upd) AS "shareCount"`;
+  return { ok: true, shareCount: r.shareCount, counted: r.counted > 0 };
 }
 
 // ---------------------------------------------------------------- comments
@@ -273,23 +241,21 @@ export async function addComment(
 
   const me = await writer();
   if (isDenied(me)) return me;
-  if (!(await withinLimit("comment", me))) return deny(429);
-
-  const post = await prisma.post.findFirst({
-    where: { id: id.data, hidden: false },
-    select: { id: true },
-  });
+  // Independent checks, one round trip.
+  const [allowed, post, target] = await Promise.all([
+    withinLimit("comment", me),
+    prisma.post.findFirst({ where: { id: id.data, hidden: false }, select: { id: true } }),
+    parent
+      ? prisma.comment.findFirst({
+          where: { id: parent.data, postId: id.data },
+          select: { id: true, parentId: true },
+        })
+      : null,
+  ]);
+  if (!allowed) return deny(429);
   if (!post) return { error: "This post is no longer available." };
-
-  let topLevelId: string | null = null;
-  if (parent) {
-    const target = await prisma.comment.findFirst({
-      where: { id: parent.data, postId: post.id },
-      select: { id: true, parentId: true },
-    });
-    if (!target) return { error: "That comment no longer exists." };
-    topLevelId = target.parentId ?? target.id;
-  }
+  if (parent && !target) return { error: "That comment no longer exists." };
+  const topLevelId = target ? (target.parentId ?? target.id) : null;
 
   const [created] = await prisma.$transaction([
     prisma.comment.create({

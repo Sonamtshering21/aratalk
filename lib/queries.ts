@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { connection } from "next/server";
 import { prisma } from "./prisma";
 import { readIdentityHash } from "./identity";
@@ -37,41 +38,33 @@ export async function getPostPage(
 ): Promise<{ post: PostDetail; comments: ThreadsPage; readAt: number } | null> {
   await connection(); // request-time only: never prerender the clock
   const readAt = Date.now();
-  const post = await getPost(id);
+  // Independent: load the post and the first page of comments together.
+  // (A hidden post's comments are discarded below and never sent.)
+  const [post, comments] = await Promise.all([getPost(id), getThreadsPage(id, null)]);
   if (!post) return null;
-  // Only the first page of comments; the rest load on demand.
-  const comments = await getThreadsPage(post.id, null);
   return { post, comments, readAt };
 }
 
-async function getPost(id: string): Promise<PostDetail | null> {
-  const [post, hash] = await Promise.all([
-    prisma.post.findFirst({ where: { id, hidden: false }, select: publicPostFields }),
-    readIdentityHash(),
-  ]);
-  if (!post) return null;
-  const [liked, shared] = hash
-    ? await Promise.all([
-        prisma.like.findUnique({
-          where: { postId_userHash: { postId: post.id, userHash: hash } },
-          select: { postId: true },
-        }),
-        prisma.postShare.findUnique({
-          where: { postId_userHash: { postId: post.id, userHash: hash } },
-          select: { postId: true },
-        }),
-      ])
-    : [null, null];
-  return { ...post, likedByMe: liked !== null, sharedByMe: shared !== null };
-}
+/**
+ * The post plus this browser's like/share flags, in one query. Wrapped in React
+ * cache() so the page and its metadata share a single lookup per request.
+ */
+const getPost = cache(async (id: string): Promise<PostDetail | null> => {
+  if (!id || id.length > 40) return null;
+  const viewer = (await readIdentityHash()) ?? "";
+  const mine = { where: { userHash: viewer }, select: { postId: true }, take: 1 } as const;
+  const row = await prisma.post.findFirst({
+    where: { id, hidden: false },
+    select: { ...publicPostFields, likes: mine, shares: mine },
+  });
+  if (!row) return null;
+  const { likes, shares, ...post } = row;
+  return { ...post, likedByMe: likes.length > 0, sharedByMe: shares.length > 0 };
+});
 
-/** Public fields for link previews (metadata and the OG image). Null if hidden or missing. */
+/** Public fields for link previews (metadata). Null if hidden or missing. */
 export async function getPostPreview(
   id: string,
 ): Promise<{ title: string; body: string; nickname: string } | null> {
-  if (!id || id.length > 40) return null;
-  return prisma.post.findFirst({
-    where: { id, hidden: false },
-    select: { title: true, body: true, nickname: true },
-  });
+  return getPost(id);
 }

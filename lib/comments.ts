@@ -63,23 +63,19 @@ const after = (k: Key) => ({
 
 // ---------------------------------------------------------------- helpers
 
-async function likedSet(ids: string[]): Promise<Set<string>> {
-  const hash = await readIdentityHash();
-  if (!hash || ids.length === 0) return new Set();
-  const likes = await prisma.commentLike.findMany({
-    where: { userHash: hash, commentId: { in: ids } },
-    select: { commentId: true },
-  });
-  return new Set(likes.map((l) => l.commentId));
-}
+/** Public fields plus whether this browser liked it (joined in the same query). */
+const withMyLike = (viewer: string) =>
+  ({ ...fields, likes: { where: { userHash: viewer }, select: { commentId: true }, take: 1 } }) as const;
 
-const toItem = (r: Row, liked: Set<string>): CommentItem => ({
+type RowWithLike = Row & { likes: { commentId: string }[] };
+
+const toItem = (r: RowWithLike): CommentItem => ({
   id: r.id,
   body: r.body,
   nickname: r.nickname,
   likeCount: r.likeCount,
   createdAt: r.createdAt.toISOString(),
-  likedByMe: liked.has(r.id),
+  likedByMe: r.likes.length > 0,
 });
 
 // ---------------------------------------------------------------- pages
@@ -87,6 +83,8 @@ const toItem = (r: Row, liked: Set<string>): CommentItem => ({
 /** One page of top-level comments for a visible post, newest first. */
 export async function getThreadsPage(postId: string, rawCursor: string | null): Promise<ThreadsPage> {
   const cursor = decode(rawCursor);
+  const viewer = (await readIdentityHash()) ?? "";
+  // One query: comments, their first replies, reply counts and like flags.
   const rows = await prisma.comment.findMany({
     where: {
       postId,
@@ -100,26 +98,25 @@ export async function getThreadsPage(postId: string, rawCursor: string | null): 
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     take: COMMENTS_PAGE_SIZE + 1,
     select: {
-      ...fields,
+      ...withMyLike(viewer),
       replies: {
         where: { hidden: false },
         orderBy: [{ createdAt: "asc" }, { id: "asc" }],
         take: REPLIES_PREVIEW,
-        select: fields,
+        select: withMyLike(viewer),
       },
       _count: { select: { replies: { where: { hidden: false } } } },
     },
   });
 
   const page = rows.slice(0, COMMENTS_PAGE_SIZE);
-  const liked = await likedSet(page.flatMap((r) => [r.id, ...r.replies.map((x) => x.id)]));
   const threads: ThreadItem[] = page.map((r) => {
     const last = r.replies[r.replies.length - 1];
     return {
       id: r.id,
       createdAt: r.createdAt.toISOString(),
-      comment: r.hidden ? null : toItem(r, liked),
-      replies: r.replies.map((x) => toItem(x, liked)),
+      comment: r.hidden ? null : toItem(r),
+      replies: r.replies.map(toItem),
       replyCount: r._count.replies,
       repliesCursor: last && r._count.replies > r.replies.length ? encode(last) : null,
     };
@@ -134,17 +131,17 @@ export async function getThreadsPage(postId: string, rawCursor: string | null): 
 /** One page of replies to a top-level comment, oldest first, after `rawCursor`. */
 export async function getRepliesPage(parentId: string, rawCursor: string | null): Promise<RepliesPage> {
   const cursor = decode(rawCursor);
+  const viewer = (await readIdentityHash()) ?? "";
   const rows = await prisma.comment.findMany({
     where: { parentId, hidden: false, ...(cursor ? after(cursor) : {}) },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     take: REPLIES_PAGE_SIZE + 1,
-    select: fields,
+    select: withMyLike(viewer),
   });
   const page = rows.slice(0, REPLIES_PAGE_SIZE);
-  const liked = await likedSet(page.map((r) => r.id));
   const tail = page[page.length - 1];
   return {
-    replies: page.map((r) => toItem(r, liked)),
+    replies: page.map(toItem),
     nextCursor: rows.length > REPLIES_PAGE_SIZE && tail ? encode(tail) : null,
   };
 }

@@ -5,8 +5,9 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FeedPage, FeedPost, FeedTab, TopRange } from "@/lib/feed-types";
 import { EmptyState } from "./EmptyState";
+import { useFeedNav } from "./FeedNav";
 import { PostCard } from "./PostCard";
-import { PostCardSkeleton } from "./Skeletons";
+import { FeedSkeleton, PostCardSkeleton } from "./Skeletons";
 
 const NEW_POSTS_POLL_MS = 60_000;
 
@@ -85,6 +86,10 @@ export function FeedList({
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
+
+  // Switching tab/range: show skeletons right away instead of the old list.
+  const nav = useFeedNav();
+  if (nav?.pending) return <FeedSkeleton />;
 
   if (posts.length === 0 && !cursor) {
     const text = EMPTY_TEXT[tab];

@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { Prisma } from "@prisma/client";
 import { connection } from "next/server";
 import { z } from "zod";
 import { prisma } from "./prisma";
@@ -5,89 +7,75 @@ import { readIdentityHash } from "./identity";
 import { readSnapshot, saveSnapshot } from "./feed-snapshots";
 import { PAGE_SIZE, type FeedPage, type FeedPost, type FeedTab, type TopRange } from "./feed-types";
 
-// Explicit public fields. authorHash is never selected.
-const cardFields = {
-  id: true,
-  title: true,
-  body: true,
-  nickname: true,
-  likeCount: true,
-  commentCount: true,
-  viewCount: true,
-  shareCount: true,
-  createdAt: true,
-} as const;
+// Feed pages are built to need as few database round trips as possible:
+// - Latest: one query (posts + this browser's like/share flags, joined).
+// - Trending/Top page 1: one SQL statement (ranking + posts + flags). No writes.
+// - Trending/Top page 2: re-rank at page 1's moment, minus page 1's ids (carried
+//   in the cursor), then save a snapshot of the rest in parallel with loading
+//   the page. Later pages walk that snapshot. So likes arriving mid-scroll can't
+//   cause duplicates or skips, and nothing is written unless someone scrolls.
 
 const DAY_MS = 86_400_000;
 const TRENDING_WINDOW_DAYS = 30;
 const TRENDING_POOL = 500;
 const TOP_LIMIT = 1000;
 const TOP_RANGE_DAYS: Record<TopRange, number | null> = { week: 7, month: 30, all: null };
-
-// ---------------------------------------------------------------- ranking
+const EXCERPT_SOURCE_CHARS = 400; // enough for a 180-character excerpt
 
 /**
- * Engagement decayed by age (Hacker-News style gravity).
- * Comments weigh double a like; shares count a little (one per browser, like
- * views but rarer); views count least, since they're cheap.
+ * Trending score = engagement decayed by age (Hacker-News style gravity):
+ *   (1 + likes + 2·comments + 0.5·shares + 0.1·views) / (ageHours + 2)^1.5
+ * Computed in SQL so ranking and loading the first page is one statement.
  */
 export const SHARE_WEIGHT = 0.5;
-export function trendingScore(
-  p: { likeCount: number; commentCount: number; viewCount: number; shareCount: number; createdAt: Date },
-  now: number,
-): number {
-  const ageHours = Math.max(0, (now - p.createdAt.getTime()) / 3_600_000);
-  const engagement =
-    1 + p.likeCount + 2 * p.commentCount + SHARE_WEIGHT * p.shareCount + 0.1 * p.viewCount;
-  return engagement / Math.pow(ageHours + 2, 1.5);
-}
 
-async function rankTrending(now: number): Promise<string[]> {
-  const pool = await prisma.post.findMany({
-    where: { hidden: false, createdAt: { gte: new Date(now - TRENDING_WINDOW_DAYS * DAY_MS) } },
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    take: TRENDING_POOL,
-    select: { id: true, likeCount: true, commentCount: true, viewCount: true, shareCount: true, createdAt: true },
-  });
-  // Ties keep the pool's newest-first order (Array.prototype.sort is stable).
-  return pool
-    .map((p) => ({ id: p.id, score: trendingScore(p, now) }))
-    .sort((a, b) => b.score - a.score)
-    .map((p) => p.id);
-}
+// Prisma stores UTC in `timestamp without time zone`; pass ISO strings and cast,
+// so the DB session time zone can't shift them.
+const ts = (ms: number) => Prisma.sql`${new Date(ms).toISOString()}::timestamp`;
 
-async function rankTop(range: TopRange, now: number): Promise<string[]> {
+/** FROM/WHERE and ORDER BY for a ranked tab, evaluated as of `at`. */
+function ranking(tab: "trending" | "top", range: TopRange, at: number) {
+  if (tab === "trending") {
+    return {
+      from: Prisma.sql`FROM (
+        SELECT * FROM "Post"
+        WHERE "hidden" = false AND "createdAt" >= ${ts(at - TRENDING_WINDOW_DAYS * DAY_MS)}
+        ORDER BY "createdAt" DESC, "id" DESC
+        LIMIT ${TRENDING_POOL}
+      ) p`,
+      order: Prisma.sql`(
+        (1 + p."likeCount" + 2 * p."commentCount" + ${SHARE_WEIGHT}::float8 * p."shareCount" + 0.1 * p."viewCount")
+        / power(GREATEST(0, EXTRACT(EPOCH FROM (${ts(at)} - p."createdAt")) / 3600.0) + 2, 1.5)
+      ) DESC, p."createdAt" DESC, p."id" DESC`,
+      limit: TRENDING_POOL,
+    };
+  }
   const days = TOP_RANGE_DAYS[range];
-  const since = days === null ? new Date(0) : new Date(now - days * DAY_MS);
-  // Prisma can't order by a sum of columns, so rank ids with parameterized SQL.
-  // Prisma stores UTC in `timestamp without time zone`; a Date parameter would be
-  // shifted by the DB session time zone, so compare against the UTC ISO string.
-  const rows = await prisma.$queryRaw<{ id: string }[]>`
-    SELECT "id" FROM "Post"
-    WHERE "hidden" = false AND "createdAt" >= ${since.toISOString()}::timestamp
-    ORDER BY ("likeCount" + "commentCount") DESC, "createdAt" DESC, "id" DESC
-    LIMIT ${TOP_LIMIT}`;
-  return rows.map((r) => r.id);
+  return {
+    from: Prisma.sql`FROM "Post" p WHERE p."hidden" = false AND p."createdAt" >= ${ts(days === null ? 0 : at - days * DAY_MS)}`,
+    order: Prisma.sql`(p."likeCount" + p."commentCount") DESC, p."createdAt" DESC, p."id" DESC`,
+    limit: TOP_LIMIT,
+  };
 }
 
 // ---------------------------------------------------------------- cursors
 
+const idList = z.array(z.string().min(1).max(40)).max(PAGE_SIZE);
+
 const cursorSchema = z.discriminatedUnion("k", [
   // Latest: keyset on (createdAt, id), both immutable.
   z.object({ k: z.literal("t"), c: z.number().int().nonnegative(), i: z.string().min(1).max(40) }),
-  // Ranked: offset into a frozen snapshot of ids.
-  z.object({
-    k: z.literal("s"),
-    s: z.string().uuid(),
-    o: z.number().int().nonnegative().max(TOP_LIMIT),
-  }),
+  // Ranked page 2: re-rank as of time `t`, without the ids already shown (`x`).
+  z.object({ k: z.literal("r"), t: z.number().int().nonnegative(), x: idList }),
+  // Ranked page 3+: offset into a frozen snapshot of ids.
+  z.object({ k: z.literal("s"), s: z.string().uuid(), o: z.number().int().nonnegative().max(TOP_LIMIT) }),
 ]);
 type Cursor = z.infer<typeof cursorSchema>;
 
 const encodeCursor = (c: Cursor) => Buffer.from(JSON.stringify(c)).toString("base64url");
 
 function decodeCursor(raw: string | null | undefined): Cursor | null {
-  if (!raw || raw.length > 200) return null;
+  if (!raw || raw.length > 2000) return null;
   try {
     const parsed = cursorSchema.safeParse(JSON.parse(Buffer.from(raw, "base64url").toString("utf8")));
     return parsed.success ? parsed.data : null;
@@ -96,7 +84,13 @@ function decodeCursor(raw: string | null | undefined): Cursor | null {
   }
 }
 
-// ---------------------------------------------------------------- pages
+// ---------------------------------------------------------------- rows
+
+export function excerpt(text: string, max = 180): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (flat.length <= max) return flat;
+  return flat.slice(0, max).replace(/\s+\S*$/, "") + "…";
+}
 
 type CardRow = {
   id: string;
@@ -108,43 +102,66 @@ type CardRow = {
   viewCount: number;
   shareCount: number;
   createdAt: Date;
+  likedByMe: boolean;
+  sharedByMe: boolean;
 };
 
-export function excerpt(text: string, max = 180): string {
-  const flat = text.replace(/\s+/g, " ").trim();
-  if (flat.length <= max) return flat;
-  return flat.slice(0, max).replace(/\s+\S*$/, "") + "…";
+const toFeedPost = (r: CardRow): FeedPost => ({
+  id: r.id,
+  title: r.title,
+  excerpt: excerpt(r.body),
+  nickname: r.nickname,
+  likeCount: r.likeCount,
+  commentCount: r.commentCount,
+  viewCount: r.viewCount,
+  shareCount: r.shareCount,
+  createdAt: r.createdAt.toISOString(),
+  likedByMe: r.likedByMe,
+  sharedByMe: r.sharedByMe,
+});
+
+/** Public card fields plus this browser's like/share flags, joined in one query. */
+function cardSelect(viewer: string | null) {
+  const mine = { where: { userHash: viewer ?? "" }, select: { postId: true }, take: 1 } as const;
+  return {
+    id: true,
+    title: true,
+    body: true,
+    nickname: true,
+    likeCount: true,
+    commentCount: true,
+    viewCount: true,
+    shareCount: true,
+    createdAt: true,
+    likes: mine,
+    shares: mine,
+  } as const;
 }
 
-async function toFeedPosts(rows: CardRow[]): Promise<FeedPost[]> {
-  const hash = await readIdentityHash();
-  const liked = new Set<string>();
-  const shared = new Set<string>();
-  if (hash && rows.length > 0) {
-    const ids = rows.map((r) => r.id);
-    const [likes, shares] = await Promise.all([
-      prisma.like.findMany({ where: { userHash: hash, postId: { in: ids } }, select: { postId: true } }),
-      prisma.postShare.findMany({ where: { userHash: hash, postId: { in: ids } }, select: { postId: true } }),
-    ]);
-    for (const l of likes) liked.add(l.postId);
-    for (const s of shares) shared.add(s.postId);
-  }
-  return rows.map((r) => ({
-    id: r.id,
-    title: r.title,
-    excerpt: excerpt(r.body),
-    nickname: r.nickname,
-    likeCount: r.likeCount,
-    commentCount: r.commentCount,
-    viewCount: r.viewCount,
-    shareCount: r.shareCount,
-    createdAt: r.createdAt.toISOString(),
-    likedByMe: liked.has(r.id),
-    sharedByMe: shared.has(r.id),
-  }));
+type CardWithFlags = Omit<CardRow, "likedByMe" | "sharedByMe"> & {
+  likes: { postId: string }[];
+  shares: { postId: string }[];
+};
+const withFlags = ({ likes, shares, ...r }: CardWithFlags): CardRow => ({
+  ...r,
+  likedByMe: likes.length > 0,
+  sharedByMe: shares.length > 0,
+});
+
+/** Cards for these ids, in this order (posts hidden since are skipped). */
+async function cardsByIds(ids: string[], viewer: string | null): Promise<CardRow[]> {
+  if (ids.length === 0) return [];
+  const rows = await prisma.post.findMany({
+    where: { id: { in: ids }, hidden: false },
+    select: cardSelect(viewer),
+  });
+  const order = new Map(ids.map((id, i) => [id, i]));
+  return rows.map(withFlags).sort((a, b) => order.get(a.id)! - order.get(b.id)!);
 }
 
-async function latestPage(cursor: Cursor | null, readAt: number): Promise<FeedPage> {
+// ---------------------------------------------------------------- pages
+
+async function latestPage(cursor: Cursor | null, viewer: string | null, readAt: number): Promise<FeedPage> {
   const after =
     cursor?.k === "t"
       ? {
@@ -154,69 +171,101 @@ async function latestPage(cursor: Cursor | null, readAt: number): Promise<FeedPa
           ],
         }
       : {};
-  const rows = await prisma.post.findMany({
-    where: { hidden: false, ...after },
-    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-    take: PAGE_SIZE + 1,
-    select: cardFields,
-  });
-  const hasMore = rows.length > PAGE_SIZE;
+  const rows = (
+    await prisma.post.findMany({
+      where: { hidden: false, ...after },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: PAGE_SIZE + 1,
+      select: cardSelect(viewer),
+    })
+  ).map(withFlags);
   const page = rows.slice(0, PAGE_SIZE);
   const last = page[page.length - 1];
   return {
-    posts: await toFeedPosts(page),
+    posts: page.map(toFeedPost),
     nextCursor:
-      hasMore && last ? encodeCursor({ k: "t", c: last.createdAt.getTime(), i: last.id }) : null,
+      rows.length > PAGE_SIZE && last ? encodeCursor({ k: "t", c: last.createdAt.getTime(), i: last.id }) : null,
     readAt,
   };
 }
 
-async function rankedPage(
+/** Ranked first page: rank + load + flags in a single statement. */
+async function rankedFirstPage(tab: "trending" | "top", range: TopRange, viewer: string | null, readAt: number): Promise<FeedPage> {
+  const { from, order } = ranking(tab, range, readAt);
+  const me = viewer ?? "";
+  const rows = await prisma.$queryRaw<CardRow[]>`
+    SELECT p."id", p."title", left(p."body", ${EXCERPT_SOURCE_CHARS}::int) AS "body", p."nickname",
+           p."likeCount", p."commentCount", p."viewCount", p."shareCount", p."createdAt",
+           EXISTS (SELECT 1 FROM "Like" l WHERE l."postId" = p."id" AND l."userHash" = ${me}) AS "likedByMe",
+           EXISTS (SELECT 1 FROM "PostShare" s WHERE s."postId" = p."id" AND s."userHash" = ${me}) AS "sharedByMe"
+    ${from}
+    ORDER BY ${order}
+    LIMIT ${PAGE_SIZE + 1}`;
+  const page = rows.slice(0, PAGE_SIZE);
+  return {
+    posts: page.map(toFeedPost),
+    nextCursor:
+      rows.length > PAGE_SIZE ? encodeCursor({ k: "r", t: readAt, x: page.map((r) => r.id) }) : null,
+    readAt,
+  };
+}
+
+async function rankIds(tab: "trending" | "top", range: TopRange, at: number): Promise<string[]> {
+  const { from, order, limit } = ranking(tab, range, at);
+  const rows = await prisma.$queryRaw<{ id: string }[]>`SELECT p."id" ${from} ORDER BY ${order} LIMIT ${limit}`;
+  return rows.map((r) => r.id);
+}
+
+/** Ranked page 2+: walk a snapshot, creating it (only now) when page 2 is requested. */
+async function rankedNextPage(
   tab: "trending" | "top",
   range: TopRange,
-  cursor: Cursor | null,
+  cursor: Extract<Cursor, { k: "r" | "s" }>,
+  viewer: string | null,
   readAt: number,
 ): Promise<FeedPage> {
-  const offset = cursor?.k === "s" ? cursor.o : 0;
-  let snapshotId = cursor?.k === "s" ? cursor.s : null;
-  let ids = snapshotId ? await readSnapshot(snapshotId, readAt) : null;
+  let rest: string[] | null = null;
+  let snapshotId: string | null = null;
+  let offset = 0;
 
-  if (!ids) {
-    // First page, or the snapshot expired: rank now and freeze the result.
-    ids = tab === "trending" ? await rankTrending(readAt) : await rankTop(range, readAt);
-    snapshotId = ids.length > offset + PAGE_SIZE ? await saveSnapshot(ids, readAt) : null;
+  if (cursor.k === "s") {
+    rest = await readSnapshot(cursor.s, readAt);
+    snapshotId = rest ? cursor.s : null;
+    offset = cursor.o;
+  }
+  if (!rest) {
+    // Page 2 (or an expired snapshot): rank as of page 1's moment when we know
+    // it, and leave out what page 1 already showed.
+    const shown = new Set(cursor.k === "r" ? cursor.x : []);
+    rest = (await rankIds(tab, range, cursor.k === "r" ? cursor.t : readAt)).filter((id) => !shown.has(id));
+    if (cursor.k === "s") offset = Math.min(cursor.o, rest.length); // expired: best effort, the browser dedupes
   }
 
-  const pageIds = ids.slice(offset, offset + PAGE_SIZE);
-  const rows = await prisma.post.findMany({
-    // Posts hidden since the snapshot was taken are simply skipped.
-    where: { id: { in: pageIds }, hidden: false },
-    select: cardFields,
-  });
-  const order = new Map(pageIds.map((id, i) => [id, i]));
-  rows.sort((a, b) => order.get(a.id)! - order.get(b.id)!);
-
+  const pageIds = rest.slice(offset, offset + PAGE_SIZE);
   const nextOffset = offset + PAGE_SIZE;
+  const needsSnapshot = !snapshotId && nextOffset < rest.length;
+  const newId = needsSnapshot ? randomUUID() : null;
+
+  // Saving the snapshot and loading this page don't depend on each other.
+  const [rows] = await Promise.all([
+    cardsByIds(pageIds, viewer),
+    newId ? saveSnapshot(newId, rest, readAt) : null,
+  ]);
+  const id = snapshotId ?? newId;
   return {
-    posts: await toFeedPosts(rows),
-    nextCursor:
-      snapshotId && nextOffset < ids.length
-        ? encodeCursor({ k: "s", s: snapshotId, o: nextOffset })
-        : null,
+    posts: rows.map(toFeedPost),
+    nextCursor: id && nextOffset < rest.length ? encodeCursor({ k: "s", s: id, o: nextOffset }) : null,
     readAt,
   };
 }
 
-export async function getFeedPage(
-  tab: FeedTab,
-  range: TopRange,
-  rawCursor: string | null,
-): Promise<FeedPage> {
+export async function getFeedPage(tab: FeedTab, range: TopRange, rawCursor: string | null): Promise<FeedPage> {
   await connection(); // request-time only: never prerender the clock
   const readAt = Date.now();
-  const cursor = decodeCursor(rawCursor);
-  if (tab === "latest") return latestPage(cursor?.k === "t" ? cursor : null, readAt);
-  return rankedPage(tab, range, cursor?.k === "s" ? cursor : null, readAt);
+  const [cursor, viewer] = [decodeCursor(rawCursor), await readIdentityHash()];
+  if (tab === "latest") return latestPage(cursor?.k === "t" ? cursor : null, viewer, readAt);
+  if (cursor && cursor.k !== "t") return rankedNextPage(tab, range, cursor, viewer, readAt);
+  return rankedFirstPage(tab, range, viewer, readAt);
 }
 
 /** Lightweight check for the "New posts" pill. The viewer's own posts don't count. */

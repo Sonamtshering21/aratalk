@@ -1,7 +1,10 @@
 // AraTalk database schema (Prisma 6, classic generator).
 
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  /// Load relations (viewer's likes/shares, comment replies and counts) in the
+  /// same SQL statement instead of extra round trips to the database.
+  previewFeatures = ["relationJoins"]
 }
 
 datasource db {

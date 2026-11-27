@@ -18,8 +18,25 @@ export function missingProductionEnv(env: NodeJS.ProcessEnv = process.env): stri
   return problems;
 }
 
+/** Settings that work but are slow or risky in production: logged, not fatal. */
+export function productionEnvWarnings(env: NodeJS.ProcessEnv = process.env): string[] {
+  const warnings: string[] = [];
+  try {
+    const host = new URL(env.DATABASE_URL ?? "").hostname;
+    if (host.endsWith(".neon.tech") && !host.includes("-pooler")) {
+      warnings.push(
+        "DATABASE_URL is Neon's direct connection. Use the pooled one (host with \"-pooler\") for serverless; keep the direct one in DIRECT_URL.",
+      );
+    }
+  } catch {
+    // Missing/malformed URL is reported by assertProductionEnv.
+  }
+  return warnings;
+}
+
 export function assertProductionEnv(): void {
   if (process.env.NODE_ENV !== "production") return;
+  for (const w of productionEnvWarnings()) console.warn(`[aratalk] ${w}`);
   const problems = missingProductionEnv();
   if (problems.length > 0) {
     throw new Error(

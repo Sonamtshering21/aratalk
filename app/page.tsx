@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import { getFeedPage } from "@/lib/feed";
 import { parseFeedParams, type FeedTab, type TopRange } from "@/lib/feed-types";
 import { FeedList } from "@/components/FeedList";
+import { FeedNav } from "@/components/FeedNav";
 import { FeedTabs } from "@/components/FeedTabs";
 import { FeedSkeleton } from "@/components/Skeletons";
 
@@ -37,10 +38,10 @@ export default function HomePage({ searchParams }: PageProps<"/">) {
 async function Feed({ tab, range }: { tab: FeedTab; range: TopRange }) {
   const page = await getFeedPage(tab, range, null);
   return (
-    <>
+    <FeedNav>
       <FeedTabs active={tab} range={range} />
       {/* A refresh brings a new readAt, which resets the scrolled list. */}
       <FeedList key={`${tab}:${range}:${page.readAt}`} tab={tab} range={range} initial={page} />
-    </>
+    </FeedNav>
   );
 }

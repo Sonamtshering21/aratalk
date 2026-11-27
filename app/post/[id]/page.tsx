@@ -32,7 +32,7 @@ export default function PostPage({ params }: PageProps<"/post/[id]">) {
 async function PostDetail({ id }: { id: string }) {
   const data = await getPostPage(id);
   if (!data) notFound();
-  const { post, comments, readAt: now } = data;
+  const { post, threads, readAt: now } = data;
 
   return (
     <>
@@ -57,7 +57,7 @@ async function PostDetail({ id }: { id: string }) {
         <div className="mt-6 flex flex-wrap items-center gap-1 border-t border-espresso/10 pt-3">
           <div className="-ml-3 flex items-center gap-1">
             <LikeButton
-              postId={post.id}
+              id={post.id}
               initialLiked={post.likedByMe}
               initialCount={post.likeCount}
               size="md"
@@ -83,7 +83,7 @@ async function PostDetail({ id }: { id: string }) {
         </h2>
         <CommentForm postId={post.id} />
         <div className="mt-5">
-          <CommentList comments={comments} now={now} />
+          <CommentList postId={post.id} threads={threads} now={now} />
         </div>
       </section>
     </>

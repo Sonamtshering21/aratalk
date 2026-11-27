@@ -1,17 +1,25 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { toggleLike } from "@/app/actions";
+import { toggleCommentLike, toggleLike } from "@/app/actions";
 import { HeartIcon } from "./icons";
 
 type Props = {
-  postId: string;
+  /** Post id, or comment id when `target` is "comment". */
+  id: string;
+  target?: "post" | "comment";
   initialLiked: boolean;
   initialCount: number;
-  size?: "sm" | "md";
+  size?: "xs" | "sm" | "md";
 };
 
-export function LikeButton({ postId, initialLiked, initialCount, size = "sm" }: Props) {
+export function LikeButton({
+  id,
+  target = "post",
+  initialLiked,
+  initialCount,
+  size = "sm",
+}: Props) {
   const [state, setState] = useState({ liked: initialLiked, count: initialCount });
   const [server, setServer] = useState({ liked: initialLiked, count: initialCount });
   const [error, setError] = useState<string | null>(null);
@@ -36,7 +44,7 @@ export function LikeButton({ postId, initialLiked, initialCount, size = "sm" }: 
 
     startTransition(async () => {
       try {
-        const result = await toggleLike(postId);
+        const result = await (target === "comment" ? toggleCommentLike(id) : toggleLike(id));
         if (result.ok) {
           setState({ liked: result.liked, count: result.likeCount });
         } else {
@@ -51,6 +59,7 @@ export function LikeButton({ postId, initialLiked, initialCount, size = "sm" }: 
   }
 
   const md = size === "md";
+  const xs = size === "xs";
 
   return (
     <span className="relative inline-flex">
@@ -58,10 +67,10 @@ export function LikeButton({ postId, initialLiked, initialCount, size = "sm" }: 
         type="button"
         onClick={onClick}
         aria-pressed={state.liked}
-        aria-label={state.liked ? "Unlike this post" : "Like this post"}
+        aria-label={`${state.liked ? "Unlike" : "Like"} this ${target}`}
         title={error ?? undefined}
         className={`relative z-10 inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-full px-3 font-bold transition active:scale-95 ${
-          md ? "text-base" : "text-sm"
+          md ? "text-base" : xs ? "text-xs" : "text-sm"
         } ${
           state.liked
             ? "bg-gold-soft text-gold-deep"
@@ -71,7 +80,7 @@ export function LikeButton({ postId, initialLiked, initialCount, size = "sm" }: 
         <HeartIcon
           key={bump}
           filled={state.liked}
-          size={md ? 22 : 19}
+          size={md ? 22 : xs ? 16 : 19}
           className={bump > 0 && state.liked ? "animate-pop" : undefined}
         />
         <span className="tabular-nums">{state.count}</span>

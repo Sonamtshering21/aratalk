@@ -20,8 +20,11 @@ type SeedPost = {
   title: string;
   body: string;
   likes: number;
-  comments: { author: string; hoursAgo: number; body: string }[];
+  comments: SeedComment[];
 };
+
+type SeedReply = { author: string; hoursAgo: number; body: string; likes?: number };
+type SeedComment = SeedReply & { replies?: SeedReply[] };
 
 const POSTS: SeedPost[] = [
   {
@@ -31,8 +34,19 @@ const POSTS: SeedPost[] = [
     body: "Mine was at a tiny roadside place on the way to Punakha. The cheese was perfect and the chillies made me cry (in a good way).\n\nWhere's yours?",
     likes: 14,
     comments: [
-      { author: "b", hoursAgo: 1.5, body: "Honestly? My ama's. Nothing beats it." },
-      { author: "c", hoursAgo: 1, body: "There's a place near the Thimphu weekend market. Ask for extra cheese 🧀" },
+      {
+        author: "b",
+        hoursAgo: 1.5,
+        body: "Honestly? My ama's. Nothing beats it.",
+        likes: 9,
+        replies: [
+          { author: "e", hoursAgo: 1.4, body: "Every ama's ema datshi is the best ema datshi 😄", likes: 4 },
+          { author: "a", hoursAgo: 1.3, body: "Can't argue with that.", likes: 2 },
+          { author: "g", hoursAgo: 1.1, body: "Mine adds tomatoes. Controversial, I know.", likes: 1 },
+          { author: "h", hoursAgo: 0.8, body: "Tomatoes?! We need a separate post for this." },
+        ],
+      },
+      { author: "c", hoursAgo: 1, body: "There's a place near the Thimphu weekend market. Ask for extra cheese 🧀", likes: 5 },
       { author: "d", hoursAgo: 0.5, body: "Add some dried yak cheese on top. Trust me." },
     ],
   },
@@ -43,7 +57,15 @@ const POSTS: SeedPost[] = [
     body: "I have an interview next week for a civil service position. I've been studying a lot but I still feel nervous. Any tips from people who've been through it?",
     likes: 21,
     comments: [
-      { author: "e", hoursAgo: 4, body: "Breathe slowly and take your time answering. They want to see how you think, not just facts." },
+      {
+        author: "e",
+        hoursAgo: 4,
+        body: "Breathe slowly and take your time answering. They want to see how you think, not just facts.",
+        likes: 7,
+        replies: [
+          { author: "b", hoursAgo: 3.5, body: "Thank you, this actually calms me down a lot 🙏", likes: 3 },
+        ],
+      },
       { author: "a", hoursAgo: 3, body: "You've prepared, that's the hardest part. Good luck! 🍀" },
     ],
   },
@@ -54,7 +76,16 @@ const POSTS: SeedPost[] = [
     body: "I remember way more snow in Thimphu when I was a kid. This year barely anything. Climate change is real and it's happening here too.",
     likes: 9,
     comments: [
-      { author: "f", hoursAgo: 8, body: "My grandparents say the same thing about Bumthang." },
+      {
+        author: "f",
+        hoursAgo: 8,
+        body: "My grandparents say the same thing about Bumthang.",
+        likes: 3,
+        replies: [
+          { author: "c", hoursAgo: 7, body: "Same in Haa. The passes used to be white for months." },
+          { author: "h", hoursAgo: 6, body: "We should all plant more trees this spring.", likes: 2 },
+        ],
+      },
     ],
   },
   {
@@ -98,7 +129,13 @@ const POSTS: SeedPost[] = [
     likes: 8,
     comments: [
       { author: "e", hoursAgo: 70, body: "Steamed, with plenty of ezay. Fried is for emergencies." },
-      { author: "f", hoursAgo: 65, body: "Fried, and I will not be taking questions." },
+      {
+        author: "f",
+        hoursAgo: 65,
+        body: "Fried, and I will not be taking questions.",
+        likes: 6,
+        replies: [{ author: "e", hoursAgo: 64, body: "Respectfully: wrong. 😤", likes: 4 }],
+      },
     ],
   },
   {
@@ -116,38 +153,63 @@ const POSTS: SeedPost[] = [
 async function main() {
   console.log("Clearing old data…");
   await prisma.report.deleteMany();
+  await prisma.commentLike.deleteMany();
   await prisma.like.deleteMany();
   await prisma.comment.deleteMany();
   await prisma.post.deleteMany();
 
+  // Like rows from fake visitors, so likeCount always matches reality.
+  const likers = (key: string, n = 0) =>
+    Array.from({ length: n }, (_, i) => ({ userHash: hash(`liker-${key}-${i}`) }));
+
+  let commentTotal = 0;
   for (const p of POSTS) {
-    const author = person(p.author);
-    await prisma.post.create({
+    const total = p.comments.reduce((n, c) => n + 1 + (c.replies?.length ?? 0), 0);
+    commentTotal += total;
+
+    const post = await prisma.post.create({
       data: {
         title: p.title,
         body: p.body,
-        ...author,
+        ...person(p.author),
         createdAt: hoursAgo(p.hoursAgo),
         likeCount: p.likes,
-        commentCount: p.comments.length,
-        // Seed a matching number of like rows from fake visitors.
-        likes: {
-          create: Array.from({ length: p.likes }, (_, i) => ({
-            userHash: hash(`liker-${p.title}-${i}`),
-          })),
-        },
-        comments: {
-          create: p.comments.map((c) => ({
-            body: c.body,
-            ...person(c.author),
-            createdAt: hoursAgo(c.hoursAgo),
-          })),
-        },
+        commentCount: total, // includes replies
+        likes: { create: likers(p.title, p.likes) },
       },
+      select: { id: true },
     });
+
+    for (const c of p.comments) {
+      const parent = await prisma.comment.create({
+        data: {
+          postId: post.id,
+          body: c.body,
+          ...person(c.author),
+          createdAt: hoursAgo(c.hoursAgo),
+          likeCount: c.likes ?? 0,
+          likes: { create: likers(c.body, c.likes) },
+        },
+        select: { id: true },
+      });
+      for (const r of c.replies ?? []) {
+        await prisma.comment.create({
+          data: {
+            postId: post.id,
+            parentId: parent.id,
+            body: r.body,
+            ...person(r.author),
+            createdAt: hoursAgo(r.hoursAgo),
+            likeCount: r.likes ?? 0,
+            likes: { create: likers(r.body, r.likes) },
+          },
+          select: { id: true },
+        });
+      }
+    }
   }
 
-  console.log(`Seeded ${POSTS.length} posts. 🍶`);
+  console.log(`Seeded ${POSTS.length} posts and ${commentTotal} comments/replies. 🍶`);
 }
 
 main()

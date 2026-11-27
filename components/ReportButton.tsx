@@ -46,14 +46,15 @@ export function ReportButton({ targetType, targetId, hiddenRedirect }: Props) {
 
   if (message) {
     return (
-      <p role="status" className="py-2 text-xs font-semibold text-ink-soft">
+      <p role="status" className="flex min-h-11 items-center px-3 text-xs font-semibold text-ink-soft">
         {message}
       </p>
     );
   }
 
   return (
-    <div className="w-full">
+    // Closed: sits inline in an action row. Open: the form takes a full row.
+    <div className={open ? "w-full basis-full" : undefined}>
       {!open ? (
         <button
           type="button"

@@ -121,10 +121,62 @@ export async function toggleLike(postId: string): Promise<LikeResult> {
   }
 }
 
+/** Like/unlike a comment or reply. Shares the post like rate limit. */
+export async function toggleCommentLike(commentId: string): Promise<LikeResult> {
+  const id = idSchema.safeParse(commentId);
+  if (!id.success) return { ok: false, error: "Comment not found." };
+
+  const me = await getOrCreateIdentity();
+  if (!rateLimit("like", me.hash, await hashedIp())) {
+    return { ok: false, error: SLOW_DOWN };
+  }
+
+  const comment = await prisma.comment.findFirst({
+    where: { id: id.data, hidden: false, post: { hidden: false } },
+    select: { id: true },
+  });
+  if (!comment) return { ok: false, error: "Comment not found." };
+
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const removed = await tx.commentLike.deleteMany({
+        where: { commentId: comment.id, userHash: me.hash },
+      });
+      const liked = removed.count === 0;
+      if (liked) {
+        await tx.commentLike.create({
+          data: { commentId: comment.id, userHash: me.hash },
+          select: { commentId: true },
+        });
+      }
+      const updated = await tx.comment.update({
+        where: { id: comment.id },
+        data: { likeCount: { increment: liked ? 1 : -1 } },
+        select: { likeCount: true },
+      });
+      return { ok: true as const, liked, likeCount: updated.likeCount };
+    });
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
+      const current = await prisma.comment.findUnique({
+        where: { id: comment.id },
+        select: { likeCount: true },
+      });
+      return { ok: true, liked: true, likeCount: current?.likeCount ?? 0 };
+    }
+    throw e;
+  }
+}
+
 // ---------------------------------------------------------------- comments
 
+/**
+ * Add a comment, or a reply when `parentId` is given.
+ * Replies are one level deep: replying to a reply attaches to its top-level parent.
+ */
 export async function addComment(
   postId: string,
+  parentId: string | null,
   _prev: FormState,
   formData: FormData,
 ): Promise<FormState> {
@@ -132,6 +184,8 @@ export async function addComment(
 
   const id = idSchema.safeParse(postId);
   if (!id.success) return { error: "Post not found." };
+  const parent = parentId === null ? null : idSchema.safeParse(parentId);
+  if (parent && !parent.success) return { error: "That comment no longer exists." };
 
   const parsed = commentSchema.safeParse({ body: field(formData, "body") });
   if (!parsed.success) return { error: firstError(parsed.error) };
@@ -150,9 +204,25 @@ export async function addComment(
   });
   if (!post) return { error: "This post is no longer available." };
 
+  let topLevelId: string | null = null;
+  if (parent) {
+    const target = await prisma.comment.findFirst({
+      where: { id: parent.data, postId: post.id },
+      select: { id: true, parentId: true },
+    });
+    if (!target) return { error: "That comment no longer exists." };
+    topLevelId = target.parentId ?? target.id;
+  }
+
   await prisma.$transaction([
     prisma.comment.create({
-      data: { postId: post.id, body, nickname: me.nickname, authorHash: me.hash },
+      data: {
+        postId: post.id,
+        parentId: topLevelId,
+        body,
+        nickname: me.nickname,
+        authorHash: me.hash,
+      },
       select: { id: true },
     }),
     prisma.post.update({

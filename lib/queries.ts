@@ -13,10 +13,15 @@ const publicPostFields = {
   createdAt: true,
 } as const;
 
-const publicCommentFields = {
+// `hidden` and `parentId` are used on the server to build threads; the body
+// of a hidden comment is dropped before anything reaches the client.
+const commentFields = {
   id: true,
+  parentId: true,
   body: true,
   nickname: true,
+  likeCount: true,
+  hidden: true,
   createdAt: true,
 } as const;
 
@@ -37,7 +42,16 @@ export type CommentView = {
   id: string;
   body: string;
   nickname: string;
+  likeCount: number;
   createdAt: Date;
+  likedByMe: boolean;
+};
+
+/** A top-level comment with its replies. `comment` is null when it was hidden. */
+export type ThreadView = {
+  id: string;
+  comment: CommentView | null;
+  replies: CommentView[];
 };
 
 const FEED_SIZE = 50;
@@ -106,11 +120,11 @@ export async function getFeed(
 
 export async function getPostPage(
   id: string,
-): Promise<{ post: PostView; comments: CommentView[]; readAt: number } | null> {
+): Promise<{ post: PostView; threads: ThreadView[]; readAt: number } | null> {
   await connection(); // request-time only: never prerender the clock
   const readAt = Date.now();
-  const [post, comments] = await Promise.all([getPost(id), getComments(id)]);
-  return post ? { post, comments, readAt } : null;
+  const [post, threads] = await Promise.all([getPost(id), getThreads(id)]);
+  return post ? { post, threads, readAt } : null;
 }
 
 async function getPost(id: string): Promise<PostView | null> {
@@ -123,13 +137,52 @@ async function getPost(id: string): Promise<PostView | null> {
   return { ...post, likedByMe: liked.has(post.id) };
 }
 
-async function getComments(postId: string): Promise<CommentView[]> {
-  return prisma.comment.findMany({
-    where: { postId, hidden: false },
-    orderBy: { createdAt: "asc" },
-    take: 500,
-    select: publicCommentFields,
+async function getThreads(postId: string): Promise<ThreadView[]> {
+  const [rows, hash] = await Promise.all([
+    prisma.comment.findMany({
+      where: { postId },
+      orderBy: { createdAt: "asc" },
+      take: 1000,
+      select: commentFields,
+    }),
+    readIdentityHash(),
+  ]);
+
+  const liked = new Set<string>();
+  if (hash && rows.length > 0) {
+    const likes = await prisma.commentLike.findMany({
+      where: { userHash: hash, commentId: { in: rows.map((r) => r.id) } },
+      select: { commentId: true },
+    });
+    for (const l of likes) liked.add(l.commentId);
+  }
+
+  const toView = (r: (typeof rows)[number]): CommentView => ({
+    id: r.id,
+    body: r.body,
+    nickname: r.nickname,
+    likeCount: r.likeCount,
+    createdAt: r.createdAt,
+    likedByMe: liked.has(r.id),
   });
+
+  const repliesByParent = new Map<string, CommentView[]>();
+  for (const r of rows) {
+    if (!r.parentId || r.hidden) continue;
+    const list = repliesByParent.get(r.parentId) ?? [];
+    list.push(toView(r));
+    repliesByParent.set(r.parentId, list);
+  }
+
+  const threads: ThreadView[] = [];
+  for (const r of rows) {
+    if (r.parentId) continue;
+    const replies = repliesByParent.get(r.id) ?? [];
+    // A hidden comment stays as a placeholder only if it has visible replies.
+    if (r.hidden && replies.length === 0) continue;
+    threads.push({ id: r.id, comment: r.hidden ? null : toView(r), replies });
+  }
+  return threads;
 }
 
 export function excerpt(text: string, max = 180): string {

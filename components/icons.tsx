@@ -78,6 +78,15 @@ export function FlameIcon(props: IconProps) {
   );
 }
 
+export function ReplyIcon(props: IconProps) {
+  return (
+    <Svg {...props}>
+      <path d="M9 14 4 9l5-5" />
+      <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
+    </Svg>
+  );
+}
+
 export function SendIcon(props: IconProps) {
   return (
     <Svg {...props}>

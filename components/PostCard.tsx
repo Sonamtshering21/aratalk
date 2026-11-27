@@ -29,7 +29,7 @@ export function PostCard({ post, now }: { post: PostView; now: number }) {
       </p>
 
       <div className="-ml-3 mt-3 flex items-center gap-1">
-        <LikeButton postId={post.id} initialLiked={post.likedByMe} initialCount={post.likeCount} />
+        <LikeButton id={post.id} initialLiked={post.likedByMe} initialCount={post.likeCount} />
         <Link
           href={`${href}#comments`}
           className="relative z-10 inline-flex min-h-11 min-w-11 items-center justify-center gap-1.5 rounded-full px-3 text-sm font-bold text-ink-soft transition hover:bg-cream hover:text-espresso active:scale-95"

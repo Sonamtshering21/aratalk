@@ -29,17 +29,34 @@ model Post {
 }
 
 model Comment {
-  id          String   @id @default(cuid())
+  id          String        @id @default(cuid())
   postId      String
-  body        String   @db.Text
-  nickname    String   @db.VarChar(60)
-  authorHash  String   @db.Char(64)
-  reportCount Int      @default(0)
-  hidden      Boolean  @default(false)
-  createdAt   DateTime @default(now())
-  post        Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  /// Top-level comment this replies to. Replies are one level deep only.
+  parentId    String?
+  body        String        @db.Text
+  nickname    String        @db.VarChar(60)
+  authorHash  String        @db.Char(64)
+  likeCount   Int           @default(0)
+  reportCount Int           @default(0)
+  hidden      Boolean       @default(false)
+  createdAt   DateTime      @default(now())
+  post        Post          @relation(fields: [postId], references: [id], onDelete: Cascade)
+  parent      Comment?      @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies     Comment[]     @relation("CommentReplies")
+  likes       CommentLike[]
 
   @@index([postId, hidden, createdAt])
+  @@index([parentId])
+}
+
+model CommentLike {
+  commentId String
+  userHash  String   @db.Char(64)
+  createdAt DateTime @default(now())
+  comment   Comment  @relation(fields: [commentId], references: [id], onDelete: Cascade)
+
+  @@id([commentId, userHash])
+  @@index([userHash])
 }
 
 model Like {

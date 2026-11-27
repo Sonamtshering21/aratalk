@@ -3,6 +3,9 @@ import { prisma } from "./prisma";
 // Fixed-window rate limiter stored in Postgres, so every server instance
 // (e.g. each Vercel function) shares the same counters.
 // Each write is checked per browser id AND per IP; posts also have a daily IP cap.
+// Mobile carriers in Bhutan put many people behind one shared IP, so the
+// per-browser limits do most of the work and the per-IP limits (10x looser)
+// only stop large-scale abuse from one address.
 
 type Rule = { max: number; windowMs: number };
 
@@ -18,9 +21,12 @@ export const LIMITS = {
   report: { max: 10, windowMs: HOUR },
 } satisfies Record<string, Rule>;
 
+/** Per-IP limit = this many times the per-browser limit. */
+export const IP_MULTIPLIER = 10;
+
 /** Extra IP-only caps on top of LIMITS. */
 const IP_DAILY: Partial<Record<LimitName, Rule>> = {
-  post: { max: 20, windowMs: DAY },
+  post: { max: 100, windowMs: DAY },
 };
 
 export type LimitName = keyof typeof LIMITS;
@@ -37,7 +43,7 @@ export async function rateLimit(
   const rule = LIMITS[name];
   const checks: { key: string; rule: Rule }[] = [
     { key: `${name}:id:${identityHash}`, rule },
-    { key: `${name}:ip:${ipHash}`, rule },
+    { key: `${name}:ip:${ipHash}`, rule: { ...rule, max: rule.max * IP_MULTIPLIER } },
   ];
   const daily = IP_DAILY[name];
   if (daily) checks.push({ key: `${name}:ipday:${ipHash}`, rule: daily });

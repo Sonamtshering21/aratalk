@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Nunito } from "next/font/google";
 import { Header } from "@/components/Header";
+import { SITE_URL } from "@/lib/site";
 import "./globals.css";
 
 const nunito = Nunito({
@@ -14,6 +15,8 @@ const SITE_DESCRIPTION =
 
 // Icons come from app/icon.svg and app/apple-icon.png (file conventions).
 export const metadata: Metadata = {
+  // Makes generated image URLs (og:image) absolute, on the canonical domain.
+  metadataBase: new URL(SITE_URL),
   title: {
     default: SITE_TITLE,
     template: "%s · AraTalk",

@@ -23,9 +23,13 @@ const EMOJI: Record<(typeof NICKNAMES)[number], string> = {
   Doma: "🌿",
 };
 
+/** The emoji shown for a nickname such as "Anonymous Yak". */
+export function avatarEmoji(nickname: string): string {
+  return EMOJI[nickname.replace(/^Anonymous /, "") as (typeof NICKNAMES)[number]] ?? "🍶";
+}
+
 export function Avatar({ nickname, size = "sm" }: { nickname: string; size?: "sm" | "md" }) {
-  const name = nickname.replace(/^Anonymous /, "") as (typeof NICKNAMES)[number];
-  const emoji = EMOJI[name] ?? "🍶";
+  const emoji = avatarEmoji(nickname);
   return (
     <span
       aria-hidden="true"

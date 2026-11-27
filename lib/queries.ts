@@ -13,6 +13,7 @@ const publicPostFields = {
   likeCount: true,
   commentCount: true,
   viewCount: true,
+  shareCount: true,
   createdAt: true,
 } as const;
 
@@ -25,8 +26,10 @@ export type PostDetail = {
   likeCount: number;
   commentCount: number;
   viewCount: number;
+  shareCount: number;
   createdAt: Date;
   likedByMe: boolean;
+  sharedByMe: boolean;
 };
 
 export async function getPostPage(
@@ -47,11 +50,28 @@ async function getPost(id: string): Promise<PostDetail | null> {
     readIdentityHash(),
   ]);
   if (!post) return null;
-  const liked = hash
-    ? await prisma.like.findUnique({
-        where: { postId_userHash: { postId: post.id, userHash: hash } },
-        select: { postId: true },
-      })
-    : null;
-  return { ...post, likedByMe: liked !== null };
+  const [liked, shared] = hash
+    ? await Promise.all([
+        prisma.like.findUnique({
+          where: { postId_userHash: { postId: post.id, userHash: hash } },
+          select: { postId: true },
+        }),
+        prisma.postShare.findUnique({
+          where: { postId_userHash: { postId: post.id, userHash: hash } },
+          select: { postId: true },
+        }),
+      ])
+    : [null, null];
+  return { ...post, likedByMe: liked !== null, sharedByMe: shared !== null };
+}
+
+/** Public fields for link previews (metadata and the OG image). Null if hidden or missing. */
+export async function getPostPreview(
+  id: string,
+): Promise<{ title: string; body: string; nickname: string } | null> {
+  if (!id || id.length > 40) return null;
+  return prisma.post.findFirst({
+    where: { id, hidden: false },
+    select: { title: true, body: true, nickname: true },
+  });
 }

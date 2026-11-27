@@ -200,6 +200,50 @@ export async function toggleCommentLike(commentId: string): Promise<LikeResult> 
   }
 }
 
+// ---------------------------------------------------------------- shares
+
+export type ShareResult =
+  | { ok: true; shareCount: number; counted: boolean }
+  | { ok: false; error: string; status?: DeniedStatus };
+
+/**
+ * Record that this browser shared a post (native share completed, a share
+ * target was tapped, or the link was copied). Counts once per browser per post.
+ * Same guards as likes: real browser with the anonymous cookie, rate limited.
+ */
+export async function recordShare(postId: string): Promise<ShareResult> {
+  const id = idSchema.safeParse(postId);
+  if (!id.success) return { ok: false, error: "Post not found." };
+
+  const me = await writer();
+  if (isDenied(me)) return { ok: false, ...me };
+  if (!(await withinLimit("share", me))) return { ok: false, ...deny(429) };
+
+  const post = await prisma.post.findFirst({
+    where: { id: id.data, hidden: false },
+    select: { id: true, shareCount: true },
+  });
+  if (!post) return { ok: false, error: "Post not found." };
+
+  return prisma.$transaction(async (tx) => {
+    // Unique (postId, userHash): a repeat share by the same browser is skipped.
+    const created = await tx.postShare.createMany({
+      data: [{ postId: post.id, userHash: me.hash }],
+      skipDuplicates: true,
+    });
+    if (created.count === 0) {
+      const current = await tx.post.findUnique({ where: { id: post.id }, select: { shareCount: true } });
+      return { ok: true as const, shareCount: current?.shareCount ?? post.shareCount, counted: false };
+    }
+    const updated = await tx.post.update({
+      where: { id: post.id },
+      data: { shareCount: { increment: 1 } },
+      select: { shareCount: true },
+    });
+    return { ok: true as const, shareCount: updated.shareCount, counted: true };
+  });
+}
+
 // ---------------------------------------------------------------- comments
 
 /**

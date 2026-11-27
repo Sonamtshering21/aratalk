@@ -9,9 +9,35 @@ import { CommentsSection } from "@/components/CommentsSection";
 import { LikeButton } from "@/components/LikeButton";
 import { ReportButton } from "@/components/ReportButton";
 import { ViewCounter } from "@/components/ViewCounter";
+import { ShareButton } from "@/components/ShareButton";
+import { excerpt } from "@/lib/feed";
+import { getPostPreview } from "@/lib/queries";
+import { postUrl } from "@/lib/site";
+import type { Metadata } from "next";
 import { formatCount } from "@/lib/format";
 import { PostPageSkeleton } from "@/components/Skeletons";
 import { ArrowLeftIcon, ChatIcon } from "@/components/icons";
+
+/** Per-post link previews. Hidden or missing posts get no preview content. */
+export async function generateMetadata({ params }: PageProps<"/post/[id]">): Promise<Metadata> {
+  const { id } = await params;
+  const post = await getPostPreview(id);
+  if (!post) return { title: "Post not found", robots: { index: false } };
+  const description = excerpt(post.body, 160);
+  return {
+    title: post.title,
+    description,
+    alternates: { canonical: postUrl(id) },
+    openGraph: {
+      type: "article",
+      siteName: "AraTalk",
+      title: post.title,
+      description,
+      url: postUrl(id),
+    },
+    twitter: { card: "summary_large_image", title: post.title, description },
+  };
+}
 
 export default function PostPage({ params }: PageProps<"/post/[id]">) {
   return (
@@ -57,7 +83,7 @@ async function PostDetail({ id }: { id: string }) {
         </p>
 
         <div className="mt-6 flex flex-wrap items-center gap-1 border-t border-espresso/10 pt-3">
-          <div className="-ml-3 flex items-center gap-1">
+          <div className="-ml-3 flex flex-wrap items-center gap-1">
             <LikeButton
               id={post.id}
               initialLiked={post.likedByMe}
@@ -72,6 +98,14 @@ async function PostDetail({ id }: { id: string }) {
               <span className="tabular-nums">{formatCount(post.commentCount)}</span>
               <span className="sr-only">comments</span>
             </a>
+            <ShareButton
+              postId={post.id}
+              title={post.title}
+              excerpt={excerpt(post.body, 140)}
+              initialCount={post.shareCount}
+              initialShared={post.sharedByMe}
+              size="md"
+            />
             <ViewCounter postId={post.id} initialCount={post.viewCount} />
           </div>
           <div className="ml-auto">

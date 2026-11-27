@@ -17,6 +17,7 @@ export const LIMITS = {
   post: { max: 1, windowMs: MINUTE },
   comment: { max: 1, windowMs: 20_000 },
   like: { max: 30, windowMs: MINUTE }, // post and comment likes share this
+  share: { max: 30, windowMs: MINUTE }, // same rule as likes, its own bucket
   view: { max: 1, windowMs: 10_000 }, // one view batch
   report: { max: 10, windowMs: HOUR },
 } satisfies Record<string, Rule>;

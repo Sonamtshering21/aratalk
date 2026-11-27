@@ -17,8 +17,10 @@ export type FeedPost = {
   likeCount: number;
   commentCount: number;
   viewCount: number;
+  shareCount: number;
   createdAt: string;
   likedByMe: boolean;
+  sharedByMe: boolean;
 };
 
 export type FeedPage = {

@@ -14,6 +14,7 @@ const cardFields = {
   likeCount: true,
   commentCount: true,
   viewCount: true,
+  shareCount: true,
   createdAt: true,
 } as const;
 
@@ -27,14 +28,17 @@ const TOP_RANGE_DAYS: Record<TopRange, number | null> = { week: 7, month: 30, al
 
 /**
  * Engagement decayed by age (Hacker-News style gravity).
- * Comments weigh double a like; views count a little, since they're cheap.
+ * Comments weigh double a like; shares count a little (one per browser, like
+ * views but rarer); views count least, since they're cheap.
  */
+export const SHARE_WEIGHT = 0.5;
 export function trendingScore(
-  p: { likeCount: number; commentCount: number; viewCount: number; createdAt: Date },
+  p: { likeCount: number; commentCount: number; viewCount: number; shareCount: number; createdAt: Date },
   now: number,
 ): number {
   const ageHours = Math.max(0, (now - p.createdAt.getTime()) / 3_600_000);
-  const engagement = 1 + p.likeCount + 2 * p.commentCount + 0.1 * p.viewCount;
+  const engagement =
+    1 + p.likeCount + 2 * p.commentCount + SHARE_WEIGHT * p.shareCount + 0.1 * p.viewCount;
   return engagement / Math.pow(ageHours + 2, 1.5);
 }
 
@@ -43,7 +47,7 @@ async function rankTrending(now: number): Promise<string[]> {
     where: { hidden: false, createdAt: { gte: new Date(now - TRENDING_WINDOW_DAYS * DAY_MS) } },
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     take: TRENDING_POOL,
-    select: { id: true, likeCount: true, commentCount: true, viewCount: true, createdAt: true },
+    select: { id: true, likeCount: true, commentCount: true, viewCount: true, shareCount: true, createdAt: true },
   });
   // Ties keep the pool's newest-first order (Array.prototype.sort is stable).
   return pool
@@ -102,6 +106,7 @@ type CardRow = {
   likeCount: number;
   commentCount: number;
   viewCount: number;
+  shareCount: number;
   createdAt: Date;
 };
 
@@ -114,12 +119,15 @@ export function excerpt(text: string, max = 180): string {
 async function toFeedPosts(rows: CardRow[]): Promise<FeedPost[]> {
   const hash = await readIdentityHash();
   const liked = new Set<string>();
+  const shared = new Set<string>();
   if (hash && rows.length > 0) {
-    const likes = await prisma.like.findMany({
-      where: { userHash: hash, postId: { in: rows.map((r) => r.id) } },
-      select: { postId: true },
-    });
+    const ids = rows.map((r) => r.id);
+    const [likes, shares] = await Promise.all([
+      prisma.like.findMany({ where: { userHash: hash, postId: { in: ids } }, select: { postId: true } }),
+      prisma.postShare.findMany({ where: { userHash: hash, postId: { in: ids } }, select: { postId: true } }),
+    ]);
     for (const l of likes) liked.add(l.postId);
+    for (const s of shares) shared.add(s.postId);
   }
   return rows.map((r) => ({
     id: r.id,
@@ -129,8 +137,10 @@ async function toFeedPosts(rows: CardRow[]): Promise<FeedPost[]> {
     likeCount: r.likeCount,
     commentCount: r.commentCount,
     viewCount: r.viewCount,
+    shareCount: r.shareCount,
     createdAt: r.createdAt.toISOString(),
     likedByMe: liked.has(r.id),
+    sharedByMe: shared.has(r.id),
   }));
 }
 

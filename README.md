@@ -45,6 +45,7 @@ Built with Next.js 16 (App Router, Cache Components), Tailwind CSS 4, Prisma 6 a
 | `DATABASE_URL`    | PostgreSQL connection string used by the app. On Neon, use the pooled one.                                      |
 | `DIRECT_URL`      | Direct (non-pooled) connection string used by `prisma migrate`. Locally, `"${DATABASE_URL}"` is fine.           |
 | `IDENTITY_SECRET` | Salts the anonymous identity hash; at least 32 characters in production. Changing it gives every visitor a new identity. |
+| `NEXT_PUBLIC_SITE_URL`| Optional: public address used in share links and link previews. Defaults to `https://aratalk.vercel.app`; set it if you add a custom domain (it is baked in at build time, so redeploy after changing it). |
 | `DATABASE_POOL_SIZE`| Optional: database connections per server instance (default 5). |
 | `SEED_EXTRA_POSTS`| Optional, seed only: adds filler posts.                                                                         |
 
@@ -109,6 +110,8 @@ Generate a secret with `node -e "console.log(require('crypto').randomBytes(48).t
   - **Cookie required:** the anonymous browser cookie is issued when a page loads (`proxy.ts`). Writes without it are ignored.
   - **Rate limits:** stored in Postgres. Per browser ID: 1 post/min, 1 comment per 20 s, 30 likes/min, 1 view batch per 10 s, 10 reports/hour. Per IP, 10× those limits plus 100 posts per day. Mobile carriers share IPs, so the per-browser limits do most of the work and the per-IP limits only stop large-scale abuse. `/api/views` answers `429`. Server Actions can't set an HTTP status, so they return `status: 429` in their result and the page shows a "slow down" message.
   - **Input limits:** title 120, description 2000, comment 1000 characters; view batches of at most 50 post IDs.
+- **Sharing:** the Share button opens the phone's native share sheet (`navigator.share`). Where that isn't available, it opens a small sheet with Copy link, Telegram, WhatsApp, Facebook, Messenger (an app link on phones; on desktop it copies the link) and X. A share counts once per browser per post (`PostShare`, `Post.shareCount`), when native sharing completes, a target is tapped, or the link is copied. Cancelled native shares don't count. Shares add a small factor (0.5 each) to the Trending score.
+- **Link previews:** each post has its own title, description and a 1200×630 image (`app/post/[id]/opengraph-image.tsx`). Hidden or missing posts get a generic AraTalk card.
 - **Pagination:** the feed loads 20 posts at a time (infinite scroll plus a "Load more" button). Comments load 20 top-level comments at a time, newest first, with "Load more comments". Each thread shows its first 3 replies and loads 20 more per "View more replies" (`/api/posts/[id]/comments`, `/api/comments/[id]/replies`).
 - **Database connections:** one shared Prisma client per server instance with a small pool (`connection_limit=5` by default, `DATABASE_POOL_SIZE` to change it).
 - **Feed tabs:** Latest, Trending and Top. Top has This week / This month / All time. The tab and range are kept in the URL (`/?tab=top&range=week`).

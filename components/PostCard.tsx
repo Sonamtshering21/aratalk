@@ -5,6 +5,7 @@ import { CardViewTracker } from "./CardViewTracker";
 import { timeAgo } from "@/lib/time";
 import { Avatar } from "./Avatar";
 import { LikeButton } from "./LikeButton";
+import { ShareButton } from "./ShareButton";
 import { ViewCount } from "./ViewCount";
 import { ChatIcon } from "./icons";
 
@@ -44,6 +45,13 @@ export function PostCard({ post, now }: { post: FeedPost; now: number }) {
           <ChatIcon size={19} />
           <span className="tabular-nums">{formatCount(post.commentCount)}</span>
         </Link>
+        <ShareButton
+          postId={post.id}
+          title={post.title}
+          excerpt={post.excerpt}
+          initialCount={post.shareCount}
+          initialShared={post.sharedByMe}
+        />
         <span className="ml-auto">
           <ViewCount postId={post.id} initial={post.viewCount} />
         </span>

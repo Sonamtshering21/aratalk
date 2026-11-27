@@ -22,12 +22,14 @@ model Post {
   likeCount    Int       @default(0)
   commentCount Int       @default(0)
   viewCount    Int       @default(0)
+  shareCount   Int       @default(0)
   reportCount  Int       @default(0)
   hidden       Boolean   @default(false)
   createdAt    DateTime  @default(now())
   comments     Comment[]
   likes        Like[]
   views        PostView[]
+  shares       PostShare[]
 
   @@index([hidden, createdAt])
   @@index([authorHash, createdAt])
@@ -84,6 +86,17 @@ model PostView {
 
   @@id([postId, userHash])
   @@index([createdAt])
+}
+
+/// One row per browser (anonymous identity hash) per post: a share counts once.
+model PostShare {
+  postId    String
+  userHash  String   @db.Char(64)
+  createdAt DateTime @default(now())
+  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@id([postId, userHash])
+  @@index([userHash])
 }
 
 enum ReportTarget {

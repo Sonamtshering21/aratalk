@@ -22,6 +22,8 @@ type SeedPost = {
   likes: number;
   /** Total views; defaults to a believable multiple of the engagement. */
   views?: number;
+  /** Total shares; defaults to roughly a third of the likes. */
+  shares?: number;
   comments: SeedComment[];
 };
 
@@ -109,6 +111,7 @@ const POSTS: SeedPost[] = [
     body: "I'm studying in Australia and some nights I really miss suja and the sound of prayer wheels. How do others deal with homesickness?",
     likes: 26,
     views: 2380,
+    shares: 1240,
     comments: [
       { author: "c", hoursAgo: 28, body: "Find the Bhutanese community there! There are more of us than you'd think." },
       { author: "h", hoursAgo: 25, body: "Video call your family during dinner time. It helps a lot." },
@@ -163,6 +166,7 @@ async function main() {
   await prisma.like.deleteMany();
   await prisma.comment.deleteMany();
   await prisma.postView.deleteMany();
+  await prisma.postShare.deleteMany();
   await prisma.post.deleteMany();
 
   // Like rows from fake visitors, so likeCount always matches reality.
@@ -183,6 +187,7 @@ async function main() {
         likeCount: p.likes,
         commentCount: total, // includes replies
         viewCount: p.views ?? p.likes * 9 + total * 14 + (p.title.length % 17),
+        shareCount: p.shares ?? Math.round(p.likes / 3),
         likes: { create: likers(p.title, p.likes) },
       },
       select: { id: true },
